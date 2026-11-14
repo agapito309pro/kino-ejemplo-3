@@ -12,12 +12,16 @@
 //     flotante; «Volver al detalle» está en la tarjeta del final.
 //   - Las páginas viven en kino.storage: el estado de la pantalla
 //     queda mínimo y los cómics largos no desbordan el límite de Kino.
-// Capa del sitio (WordPress chochox.com, API REST):
-//   - Listados y búsqueda: /wp-json/wp/v2/posts?… (cada cómic es una
-//     entrada con TODAS sus páginas en una galería).
-//   - Secciones:           /wp-json/wp/v2/posts?tags=<id>…
-//   - Cómic y lectura:     /wp-json/wp/v2/posts?slug=<slug>…
-//     (imágenes en /wp-content/uploads/…, en orden de lectura).
+// Capa del sitio (WordPress chochox.com) con DOBLE CAMINO — si uno
+// falla (sitio caído, filtro del servidor, red lenta), se usa el otro:
+//   1. API REST (liviana y estructurada):
+//      - Listados y búsqueda: /wp-json/wp/v2/posts?…
+//      - Secciones:           /wp-json/wp/v2/posts?tags=<id>…
+//      - Cómic y lectura:     /wp-json/wp/v2/posts?slug=<slug>…
+//   2. HTML de las páginas del sitio (como el plugin Yuri Online):
+//      - Listados:  /porno/page/N/  ·  Secciones: /tag/<slug>/
+//      - Búsqueda:  /?s=<q>
+//      - Cómic:     /<slug>/ (metadatos og:* y galería de imágenes)
 // Marcaje de contenido: el manifiesto declara «categories: ["adult"]»
 // y «screen.adult: true», y cada tarjeta lleva «adult: true» — lo que
 // Kino exige para aplicar su filtro parental. El plugin nunca intenta
@@ -25,55 +29,85 @@
 //
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capability "screen").
 //
-// v1.0.0 — primera versión.
+// v1.0.1 — correcciones de carga:
+//   - Peticiones más livianas (12 cómics por listado, tiempos límite
+//     cortos) y cabeceras de navegador.
+//   - Respaldo HTML cuando la API REST no responde.
+//   - Errores VISIBLES: cada sección, la Biblioteca y la búsqueda
+//     distinguen «sin resultados» de «fallo de conexión» y ofrecen
+//     «Reintentar»; nunca se queda cargando para siempre.
+//   - El temporizador de Inicio ya no acumula ticks si una carga
+//     tarda (un solo intento en marcha a la vez).
 
 const BASE = "https://chochox.com";
 const API = BASE + "/wp-json/wp/v2";
-const PER_PAGE = 18; // cómics por página de listado (la respuesta REST trae el contenido completo)
+const PER_PAGE = 12; // cómics por página de listado (respuestas livianas)
 const LIB_MAX = 144; // tope de cómics acumulados en la Biblioteca (estado pequeño)
 const PAGES_MAX = 300; // tope de páginas por cómic (límite de nodos de Kino)
 
+// cabeceras comunes: el sitio filtra clientes sin cabeceras de navegador
+const HEADERS = {
+  Accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+  "Accept-Language": "es",
+  Referer: BASE + "/",
+  "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+};
+
 // ---------------------------------------------------------------- red
 
-// Todas las peticiones llevan timeoutMs: si el sitio no responde, se
-// lanza un error que se muestra con «Reintentar».
+// Petición JSON a la API REST. Lanza un error «network» si el sitio no
+// responde o devuelve algo que no es JSON.
 async function getApi(path, timeoutMs) {
   const r = await kino.fetch(API + path, {
-    headers: { Accept: "application/json", Referer: BASE + "/" },
-    timeoutMs: timeoutMs || 20000,
+    headers: HEADERS,
+    timeoutMs: timeoutMs || 15000,
   });
   if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
-    userMessage: "No se pudo conectar con ChoChoX. Inténtalo de nuevo.",
+    userMessage: "No se pudo conectar con el sitio. Inténtalo de nuevo.",
   });
   let data;
   try { data = JSON.parse(r.text()); } catch (e) {
     throw kino.error("network", "bad json", {
-      userMessage: "ChoChoX devolvió una respuesta inesperada. Inténtalo de nuevo.",
+      userMessage: "El sitio devolvió una respuesta inesperada. Inténtalo de nuevo.",
     });
   }
   return data;
 }
 
-// Listados de cómics (API REST de WordPress). Un solo punto de entrada:
-//   - tag:  id de etiqueta → /posts?tags=<id>&page=N
-//   - q:    búsqueda       → /posts?search=<q>
-//   - nada: Biblioteca      → /posts?page=N (lo más nuevo, como /porno/)
-// Devuelve SIEMPRE una lista (una página pasada de la vuelta o un fallo
-// de paginación del REST llegan como []).
-async function getLibPosts(page, q, tag) {
+// Petición HTML a una página del sitio (respaldo).
+async function getHtml(path, timeoutMs) {
+  const r = await kino.fetch(BASE + path, {
+    headers: HEADERS,
+    timeoutMs: timeoutMs || 20000,
+  });
+  if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
+    userMessage: "No se pudo conectar con el sitio. Inténtalo de nuevo.",
+  });
+  return r.text();
+}
+
+// Listado de cómics con doble camino: primero la API REST; si falla o
+// no trae nada, el HTML de la página correspondiente. Devuelve SIEMPRE
+// una lista o lanza «network» (para que la pantalla muestre el error).
+async function getCards(page, q, tag) {
   const p = parseInt(page, 10) || 1;
-  let path;
-  if (tag) path = "/posts?tags=" + tag + "&per_page=" + PER_PAGE + "&page=" + p;
-  else if (q) path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + PER_PAGE + "&page=" + p;
-  else path = "/posts?per_page=" + PER_PAGE + "&page=" + p;
+  // 1) REST
   try {
-    const arr = await getApi(path, 25000);
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) {
-    // página pasada de la vuelta: el REST responde 400 rest_post_invalid_page_number
-    if (e && e.code === "network") throw e;
-    return [];
-  }
+    let path;
+    if (tag) path = "/posts?tags=" + tag.id + "&per_page=" + PER_PAGE + "&page=" + p;
+    else if (q) path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + PER_PAGE + "&page=" + p;
+    else path = "/posts?per_page=" + PER_PAGE + "&page=" + p;
+    const arr = await getApi(path, 12000);
+    if (Array.isArray(arr) && arr.length) return postsToCards(arr);
+    if (Array.isArray(arr) && !q) return []; // página pasada de la vuelta: fin real
+  } catch (e) { kino.log("rest", e.message); }
+  // 2) HTML (respaldo)
+  let htmlPath;
+  if (tag) htmlPath = "/tag/" + tag.slug + "/" + (p > 1 ? "page/" + p + "/" : "");
+  else if (q) htmlPath = "/?s=" + encodeURIComponent(q);
+  else htmlPath = "/porno/" + (p > 1 ? "page/" + p + "/" : "");
+  const html = await getHtml(htmlPath, 20000);
+  return htmlCards(html, 40);
 }
 
 // ------------------------------------------------------------- scraping
@@ -90,15 +124,15 @@ function decode(s) {
     .replace(/\s+/g, " ").trim();
 }
 
-// Primera imagen del contenido (la portada: en ChoChoX la página 1).
+// Primera imagen del contenido (la portada: la página 1 del cómic).
 function firstImg(content) {
   const m = String(content || "").match(
     /src="(https:\/\/chochox\.com\/wp-content\/uploads\/[^"]+?\.(?:webp|jpe?g|png|gif))"/);
   return m ? m[1] : "";
 }
 
-// Entradas del REST → tarjetas de cómics. Cada tarjeta lleva
-// «adult: true» (marca que Kino exige para su filtro parental).
+// Entradas del REST → tarjetas. Cada tarjeta lleva «adult: true»
+// (marca que Kino exige para su filtro parental).
 function postsToCards(arr) {
   const out = [];
   const seen = {};
@@ -117,8 +151,46 @@ function postsToCards(arr) {
   return out;
 }
 
+// rutas de una sola pieza que NO son cómics (menú, paginación, legales…)
+const NO_SERIE = {
+  porno: true, page: true, feed: true, comments: true, search: true,
+  tag: true, category: true, author: true, autor: true,
+  "wp-json": true, "wp-content": true, "wp-admin": true, "wp-login": true,
+  contacto: true, dmca: true, "politica-de-privacidad": true,
+  "terminos-y-condiciones": true, "politica-de-cookies": true,
+  "sobre-nosotros": true, 18: true, en: true,
+};
+
+// Tarjetas desde el HTML de un listado (respaldo): enlaces de un solo
+// segmento «https://chochox.com/<slug>/» que no sean páginas fijas,
+// con la primera imagen cercana como portada y el texto del enlace
+// (o el alt de la imagen) como título.
+function htmlCards(html, max) {
+  const out = [];
+  const seen = {};
+  const re = /href="(https:\/\/chochox\.com\/([a-z0-9][a-z0-9-]{4,})\/)"/g;
+  let m;
+  while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
+    const url = m[1], slug = m[2];
+    if (seen[slug] || NO_SERIE[slug]) continue;
+    seen[slug] = true;
+    const win = html.slice(m.index, m.index + 2500);
+    const im = win.match(/<img[^>]+(?:data-src|src)="(https:\/\/chochox\.com\/wp-content\/uploads\/[^"]+?\.(?:webp|jpe?g|png|gif))"/);
+    let title = "";
+    const tre = new RegExp('href="' + url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"[^>]*>([^<]{1,150})<', "g");
+    let t;
+    while ((t = tre.exec(win)) !== null) {
+      const txt = decode(t[1]);
+      if (txt.length > 1) { title = txt; break; }
+    }
+    if (!title && im) title = decode((im[1].split("/").pop() || "").replace(/\.[a-z]+$/, "").replace(/-\d+x\d+$/, "")).replace(/-/g, " ");
+    out.push({ slug: slug, url: url, poster: im ? im[1] : "", title: title || slug.replace(/-/g, " "), adult: true });
+  }
+  return out;
+}
+
 // Imágenes de un cómic (galería del contenido, en orden de lectura).
-// Devuelve [{ url, w, h }].
+// Funciona igual sobre el HTML de la entrada o sobre content.rendered.
 function readerImages(content) {
   const html = String(content || "");
   const out = [], seen = {};
@@ -135,6 +207,17 @@ function readerImages(content) {
   return out;
 }
 
+// Metadatos desde el HTML de la entrada (respaldo): og:* + galería.
+function seriesMetaHtml(html, slug) {
+  const pick = (re) => { const m = html.match(re); return m ? decode(m[1]) : ""; };
+  return {
+    title: pick(/property="og:title"[^>]*content="([^"]+)"/) || pick(/content="([^"]+)"[^>]*property="og:title"/) || slug.replace(/-/g, " "),
+    poster: pick(/property="og:image"[^>]*content="([^"]+)"/) || pick(/content="([^"]+)"[^>]*property="og:image"/),
+    overview: (pick(/property="og:description"[^>]*content="([^"]+)"/) || pick(/content="([^"]+)"[^>]*property="og:description"/)).slice(0, 600),
+    adult: true,
+  };
+}
+
 // (receta de MangaTrack, como ZonaTM0): las páginas ya no se miden.
 // Con fit "width" + aspect "2:3", Kino le da a cada página su
 // proporción real en cuanto la imagen carga — sin descargar cabeceras.
@@ -149,9 +232,10 @@ function pageNodes(p, i, pre) {
 }
 
 // Carga un cómic: título, portada, sinopsis y lista COMPLETA de
-// páginas. Con caché de 15 minutos (force=true la salta). Tope de
-// PAGES_MAX páginas. Lo pesado se guarda en kino.storage
-// («serie:<slug>»); del estado de la pantalla solo viaja el meta.
+// páginas. REST primero, HTML de respaldo. Con caché de 15 minutos
+// (force=true la salta). Tope de PAGES_MAX páginas. Lo pesado se
+// guarda en kino.storage («serie:<slug>»); del estado de la pantalla
+// solo viaja el meta.
 async function loadSeries(slug, force) {
   if (!slugValido(slug)) throw kino.error("arguments", "slug");
   const ck = "serie:" + slug;
@@ -164,30 +248,40 @@ async function loadSeries(slug, force) {
       }
     } catch (e) { /* caché rota: se recarga */ }
   }
-  const arr = await getApi("/posts?slug=" + encodeURIComponent(slug) +
-    "&_fields=title,content,excerpt", 60000);
-  const p = arr && arr.length ? arr[0] : null;
-  if (!p) throw kino.error("not_found", "comic", {
-    userMessage: "No se encontró ese cómic en ChoChoX.",
+  let meta = null, pages = [];
+  // 1) REST (estructurado)
+  try {
+    const arr = await getApi("/posts?slug=" + encodeURIComponent(slug) +
+      "&_fields=title,content,excerpt", 30000);
+    const p = arr && arr.length ? arr[0] : null;
+    if (p) {
+      const content = p.content && p.content.rendered ? p.content.rendered : "";
+      meta = {
+        title: decode(p.title && p.title.rendered ? p.title.rendered : slug),
+        poster: firstImg(content),
+        overview: decode(p.excerpt && p.excerpt.rendered ? p.excerpt.rendered : "").slice(0, 600),
+        adult: true,
+      };
+      pages = readerImages(content);
+    }
+  } catch (e) { kino.log("rest", e.message); }
+  // 2) HTML de la entrada (respaldo)
+  if (!pages.length) {
+    const html = await getHtml("/" + slug + "/", 30000);
+    meta = seriesMetaHtml(html, slug);
+    pages = readerImages(html);
+  }
+  if (!pages.length) throw kino.error("not_found", "comic", {
+    userMessage: "No se encontraron páginas para ese cómic.",
   });
-  const content = p.content && p.content.rendered ? p.content.rendered : "";
-  const meta = {
-    title: decode(p.title && p.title.rendered ? p.title.rendered : slug),
-    poster: firstImg(content),
-    overview: decode(p.excerpt && p.excerpt.rendered ? p.excerpt.rendered : "").slice(0, 600),
-    adult: true,
-  };
-  let pages = readerImages(content);
   let capped = false;
   if (pages.length > PAGES_MAX) { pages = pages.slice(0, PAGES_MAX); capped = true; }
   if (capped) meta.capped = true;
-  if (pages.length) {
-    try {
-      setJson(ck, { meta: meta, pages: pages, ts: Date.now() });
-      const ks = kino.storage.keys().filter((k) => k.indexOf("serie:") === 0);
-      if (ks.length > 10) for (const k of ks.slice(0, ks.length - 10)) kino.storage.remove(k);
-    } catch (e) { kino.log("cache", e.message); }
-  }
+  try {
+    setJson(ck, { meta: meta, pages: pages, ts: Date.now() });
+    const ks = kino.storage.keys().filter((k) => k.indexOf("serie:") === 0);
+    if (ks.length > 10) for (const k of ks.slice(0, ks.length - 10)) kino.storage.remove(k);
+  } catch (e) { kino.log("cache", e.message); }
   return { slug: slug, meta: meta, pages: pages };
 }
 
@@ -406,6 +500,17 @@ function skelGridNode(n) {
   };
 }
 
+// estado de error con reintentar, en tamaño de fila/sección
+function filaError(mensaje, evento) {
+  return { type: "Card", key: "err-" + evento + "-" + skelSeq++, padding: 12, gap: 8,
+    children: [{ type: "Row", gap: 8, crossAxisAlignment: "center", children: [
+      { type: "Icon", name: "wifi_off", color: "muted" },
+      { type: "Text", text: mensaje, textEn: mensaje, color: "muted", style: "caption", flex: 1 },
+      { type: "TextButton", icon: "refresh", labelText: "Reintentar", labelTextEn: "Retry",
+        onPressed: { event: evento } },
+    ] }] };
+}
+
 function titleGridOf(items, eventMore, loading, done, emptyNode) {
   if (!items || !items.length) return emptyNode || EMPTY_LIB;
   const list = {
@@ -460,20 +565,20 @@ function historyList(state) {
 
 // ------------------------------------------------- categorías (como ZonaTM0)
 
-// Las secciones del Inicio: etiquetas de chochox.com (ids del REST,
-// estables). Cada cómic del sitio es 18+.
+// Las secciones del Inicio: etiquetas del sitio, con su id (API REST)
+// y su slug (HTML de respaldo).
 const GENEROS_INICIO = [
-  { key: "t603", tag: 603, label: "Parodias Porno", labelEn: "Porn Parodies" },
-  { key: "t601", tag: 601, label: "Full Color", labelEn: "Full Color" },
-  { key: "t619", tag: 619, label: "Furry Hentai", labelEn: "Furry Hentai" },
-  { key: "t744", tag: 744, label: "Comics 3D", labelEn: "3D Comics" },
-  { key: "t594", tag: 594, label: "Dragon Ball", labelEn: "Dragon Ball" },
-  { key: "t615", tag: 615, label: "Naruto", labelEn: "Naruto" },
+  { key: "t603", tag: 603, slug: "parodias-porno-comics-porno", label: "Parodias Porno", labelEn: "Porn Parodies" },
+  { key: "t601", tag: 601, slug: "full-color-xxx", label: "Full Color", labelEn: "Full Color" },
+  { key: "t619", tag: 619, slug: "furry-hentai-comics-xxx-porno", label: "Furry Hentai", labelEn: "Furry Hentai" },
+  { key: "t744", tag: 744, slug: "comics-3d", label: "Comics 3D", labelEn: "3D Comics" },
+  { key: "t594", tag: 594, slug: "dragon-ball-porno", label: "Dragon Ball", labelEn: "Dragon Ball" },
+  { key: "t615", tag: 615, slug: "naruto-hentai-xxxx", label: "Naruto", labelEn: "Naruto" },
 ];
 
 // Tope de cómics por sección en el estado (que viaja en la pantalla):
-// 18 al abrir + hasta 54 más con «Ver más».
-const GENERO_MAX = 54;
+// 12 al abrir + hasta 48 más con «Ver más».
+const GENERO_MAX = 48;
 
 // Una sección por etiqueta: tarjetas + «Ver más» al final. «usados» es
 // el mapa compartido entre secciones: un cómic que ya salió en una
@@ -494,6 +599,14 @@ function railGenero(state, g, usados) {
     ];
   }
   const items = Array.isArray(cat.items) ? cat.items : [];
+  // la carga falló por completo: error VISIBLE con reintentar — nunca
+  // una sección vacía ni esqueletos eternos
+  if (cat.error && !items.length) {
+    return [
+      { type: "Text", text: g.label, textEn: g.labelEn, style: "h3", padding: 16 },
+      filaError("No se pudo cargar esta sección.", "reintentarSeccion"),
+    ];
+  }
   const cards = [];
   for (const it of items.slice(0, 60)) {
     if (usados[it.slug]) continue;
@@ -501,7 +614,7 @@ function railGenero(state, g, usados) {
     cards.push(posterCard(it, "g" + g.key + "-", true));
   }
   if (!cards.length) return [];
-  if (items.length < GENERO_MAX) {
+  if (items.length < GENERO_MAX && !cat.error) {
     // botón «Ver más» al final de la sección
     cards.push({ type: "ElevatedButton", key: "vm-" + g.key, icon: "expand_more",
       labelText: "Ver más", labelTextEn: "See more",
@@ -522,6 +635,9 @@ function tabBody(state) {
   if (tab === "favoritos") return titleGridOf(favs(), null, false, true, EMPTY_FAV);
   if (tab === "historial") return historyList(state);
   if (tab === "biblioteca") {
+    if (state.libError) {
+      return filaError("No se pudo cargar la biblioteca. Comprueba tu conexión.", "reintentarLib");
+    }
     const items = Array.isArray(state.libItems) ? state.libItems : null;
     if (!items) return skelGridNode(12);
     return titleGridOf(items, "libMore", state.libLoading === true, state.libDone === true);
@@ -560,8 +676,7 @@ function tabBody(state) {
 
 // Biblioteca: los cómics más nuevos del sitio, paginados
 async function fetchLibrary(page) {
-  const posts = await getLibPosts(page, "", null);
-  return postsToCards(posts);
+  return getCards(page, "", null);
 }
 
 // ------------------------------------------------------------- rutas
@@ -885,9 +1000,11 @@ async function searchTree(state) {
               required: true },
             { type: "ElevatedButton", icon: "search", labelText: "Buscar", labelTextEn: "Search", submit: true },
           ] },
-          results
-            ? (results.length ? titleGridOf(results) : { type: "emptyState", icon: "search", title: "Sin resultados.", titleEn: "No results." })
-            : { type: "Text", text: "Escribe un título y pulsa Buscar.", textEn: "Type a title and press Search.", color: "muted", padding: 16 },
+          state.searchError
+            ? filaError("No se pudo buscar. Comprueba tu conexión.", "reintentarSearch")
+            : (results
+              ? (results.length ? titleGridOf(results) : { type: "emptyState", icon: "search", title: "Sin resultados para «" + q + "».", titleEn: "No results." })
+              : { type: "Text", text: "Escribe un título y pulsa Buscar.", textEn: "Type a title and press Search.", color: "muted", padding: 16 }),
         ].filter(Boolean),
       }],
     },
@@ -941,6 +1058,10 @@ let serieEnCarga = null;
 // detalle: se compara contra esta variable al terminar la carga.
 let slugDetalleActivo = null;
 
+// un solo intento de carga de la raíz a la vez: si un tick tarda, los
+// siguientes no se apilan (antes podían pisarse entre sí).
+let rootEnCarga = false;
+
 function detailLoadingDe(slug) {
   const info = CARDINFO[slug] || {};
   slugDetalleActivo = slug;
@@ -972,28 +1093,63 @@ export async function screenEvent(ev) {
     }
     // temporizador de la raíz: trae Inicio/Biblioteca en segundo plano
     if (name === "cargarRoot") {
+      if (rootEnCarga) return null;
       const tab = state.tab || "inicio";
-      if (tab === "biblioteca" && !Array.isArray(state.libItems)) {
+      if (tab === "biblioteca") {
+        if (Array.isArray(state.libItems)) return null;
+        rootEnCarga = true;
         try {
           const items = await fetchLibrary(1);
-          return { state: { libItems: items, libPage: 1, libDone: items.length < PER_PAGE } };
-        } catch (e) { return { state: { libItems: [], libError: true } }; }
+          return { state: { libItems: items, libPage: 1, libError: false, libDone: items.length < PER_PAGE } };
+        } catch (e) {
+          return { state: { libError: true } };
+        } finally {
+          rootEnCarga = false;
+        }
       }
       if (tab === "inicio") {
         // UNA sección por tick — la pantalla nunca se bloquea
         const cats = state.cats || {};
         for (const g of GENEROS_INICIO) {
-          if (!cats[g.key]) {
-            let items = [];
+          if (!cats[g.key] || (cats[g.key] && cats[g.key].error)) {
+            rootEnCarga = true;
+            let items = [], fallo = false;
             try {
-              items = postsToCards(await getLibPosts(1, "", g.tag));
-            } catch (e) { /* sección vacía; quedará como cargada */ }
-            return { state: { cats: Object.assign({}, cats, { [g.key]: { items: items, page: 1 } }) } };
+              items = await getCards(1, "", g);
+            } catch (e) { fallo = true; } finally { rootEnCarga = false; }
+            return { state: { cats: Object.assign({}, cats, { [g.key]: { items: items, page: 1, error: fallo } }) } };
           }
         }
         return null;
       }
       return null;
+    }
+    // reintentar una sección que falló (borra su estado; el siguiente
+    // tick del temporizador la vuelve a cargar)
+    if (name === "reintentarSeccion") {
+      const cats = state.cats || {};
+      const limpio = {};
+      for (const k of Object.keys(cats)) {
+        if (cats[k] && cats[k].error && !(cats[k].items || []).length) continue;
+        limpio[k] = cats[k];
+      }
+      return { state: { cats: limpio } };
+    }
+    // reintentar la Biblioteca
+    if (name === "reintentarLib") {
+      return { state: { libError: false, libItems: null } };
+    }
+    // reintentar la búsqueda (repite la última consulta)
+    if (name === "reintentarSearch") {
+      const q = typeof state.resultsQ === "string" ? state.resultsQ : "";
+      if (!q) return null;
+      try {
+        const results = await getCards(1, q, null);
+        return { state: { results: results, searchError: false },
+          toast: results.length ? results.length + " resultados" : "Sin resultados" };
+      } catch (e) {
+        return { state: { searchError: true }, toast: "Error de conexión. Inténtalo de nuevo." };
+      }
     }
     // temporizador del detalle: carga el cómic en segundo plano
     if (name === "cargarSerie" || name === "cargarSerieAhora") {
@@ -1032,10 +1188,17 @@ export async function screenEvent(ev) {
     if (name === "search") {
       const q = String(ev.value && ev.value.q || "").trim();
       if (!q) return { toast: "Escribe un título." };
-      const posts = await getLibPosts(1, q, null);
-      const results = postsToCards(posts);
-      return { state: { results: results, resultsQ: q },
-        toast: results.length ? results.length + " resultados" : "Sin resultados" };
+      let results;
+      try {
+        results = await getCards(1, q, null);
+      } catch (e) {
+        // fallo de conexión: error VISIBLE con reintentar — nunca
+        // «sin resultados», que confunde
+        return { state: { searchError: true, resultsQ: q },
+          toast: "Error de conexión. Inténtalo de nuevo." };
+      }
+      return { state: { results: results, resultsQ: q, searchError: false },
+        toast: results.length ? results.length + " resultados" : "Sin resultados para «" + q + "»" };
     }
     if (name === "retry") return { state: { _r: Date.now() } };
     // «Ver más» al final de una sección — trae la página siguiente de
@@ -1049,7 +1212,7 @@ export async function screenEvent(ev) {
       if (cat.items.length >= GENERO_MAX) return { toast: "La sección ya está completa" };
       const page = (cat.page || 1) + 1;
       try {
-        const more = postsToCards(await getLibPosts(page, "", g.tag));
+        const more = await getCards(page, "", g);
         const vistos = {};
         for (const it of cat.items) vistos[it.slug] = true;
         const nuevos = more.filter((it) => !vistos[it.slug]);
