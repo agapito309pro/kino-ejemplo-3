@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.0.0 — multi-fuente:
+// v2.0.1 — multi-fuente (añade TMOHentai, selector de fuentes con chips de Kino):
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
 //     KingComix), misma receta de datos para las dos.
 //   - Páginas de cada cómic por el endpoint de adjuntos (orden de
@@ -75,6 +75,17 @@ const SITES = [
       { key: "k229c", tax: "categories", id: 229, label: "Pokemon", labelEn: "Pokemon" },
       { key: "k169c", tax: "categories", id: 169, label: "Naruto", labelEn: "Naruto" },
       { key: "k244c", tax: "categories", id: 244, label: "My Hero Academia", labelEn: "My Hero Academia" },
+    ],
+  },
+  {
+    id: "tmo", name: "TMOHentai", base: "https://tmohentai.app",
+    kind: "tmo", comicPath: "", cardRe: "",
+    sections: [
+      { key: "tLatest", path: "/comics?order=latest", label: "Recientes", labelEn: "Latest" },
+      { key: "tPop", path: "/comics", label: "Populares", labelEn: "Popular" },
+      { key: "tDou", path: "/comics?type=doujinshi", label: "Doujinshi", labelEn: "Doujinshi" },
+      { key: "tManga", path: "/comics?type=manga", label: "Manga", labelEn: "Manga" },
+      { key: "tHentai", path: "/comics?type=hentai", label: "Hentai", labelEn: "Hentai" },
     ],
   },
 ];
@@ -167,6 +178,10 @@ async function getHtml(site, path, timeoutMs) {
 // no trae nada, el HTML de la página correspondiente. Devuelve SIEMPRE
 // una lista o lanza «network» (para que la pantalla muestre el error).
 async function getCards(site, page, q, sec) {
+  if (site.kind === "tmo") return tmoCards(await getHtml(site,
+    (q ? "/comics?title=" + encodeURIComponent(q)
+      : sec ? sec.path + "&page=" + (parseInt(page, 10) || 1)
+      : "/comics?page=" + (parseInt(page, 10) || 1)), 20000), 40, site);
   const p = parseInt(page, 10) || 1;
   // 1) REST (con _embed: trae la portada destacada de cada cómic)
   try {
@@ -272,6 +287,65 @@ function htmlCards(html, max, site) {
   return out;
 }
 
+// JSON de una ruta del sitio (para APIs que no son WordPress, como la
+// del lector de TMOHentai).
+async function getJsonUrl(site, path, timeoutMs) {
+  const r = await kino.fetch(site.base + path, {
+    headers: headersDe(site),
+    timeoutMs: timeoutMs || 15000,
+  });
+  if (!r.ok || (r.status && r.status >= 400)) {
+    throw kino.error("network", "HTTP " + (r.status || "?"));
+  }
+  let txt = "";
+  try { txt = r.text(); } catch (e) { /* cuerpo vacío */ }
+  try { return JSON.parse(txt); } catch (e) { throw kino.error("network", "no-json"); }
+}
+
+// Tarjetas desde el HTML de TMOHentai (/comics): enlaces
+// «/library/<tipo>/<id>/<slug>» con su título y portada cercana.
+function tmoCards(html, max, site) {
+  const out = [], seen = {};
+  const re = /href="((?:https?:\/\/[^"\/]+)?\/library\/[a-z0-9-]+\/(\d+)\/[a-z0-9-]+)"/g;
+  let m;
+  while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
+    const path = m[1], id = m[2];
+    if (seen[id]) continue;
+    seen[id] = true;
+    const win = html.slice(m.index, m.index + 3000);
+    const t = win.match(/manga-title[^>]*>\s*([^<]{1,200})</);
+    const im = win.match(/<img[^>]+src="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif))"/);
+    out.push({ slug: id, url: /^https?:/.test(path) ? path : site.base + path,
+      title: t ? decode(t[1]) : id, poster: im ? im[1] : "", adult: true });
+  }
+  return out;
+}
+
+// Cómics de TMOHentai (sitio propio, no WordPress): el título y la
+// portada vienen de la tarjeta/historial; las páginas, de la API JSON
+// del lector (imágenes servidas por el proxy propio del sitio,
+// storage.tmohentai.app), ya en orden de lectura.
+async function loadSeriesTmo(site, slug, force) {
+  const id = String(parseInt(slug, 10) || 0);
+  if (!id || id === "0") throw kino.error("arguments", "id");
+  const data = await getJsonUrl(site, "/api/manga/" + id + "/preview-pages", 20000);
+  const arr = (data && data.pages) || [];
+  const pages = arr.map((x) => ({ n: x.page_number || 0, url: x.proxied_url || "" }))
+    .filter((x) => x.url)
+    .sort((a, b) => a.n - b.n)
+    .map((x) => x.url).slice(0, PAGES_MAX);
+  if (!pages.length) throw kino.error("network", "sin-paginas");
+  const info = CARDINFO[slug] || {};
+  const prog = progress()[slug] || {};
+  const fav = favs().find((f) => f.slug === slug) || {};
+  const meta = {
+    title: info.title || prog.title || fav.title || "Cómic " + id,
+    poster: info.poster || prog.poster || fav.poster || pages[0],
+    overview: "", adult: true,
+  };
+  return { slug: slug, meta: meta, pages: pages };
+}
+
 // Imágenes de un cómic (galería del contenido, en orden de lectura).
 // Genérica: cualquier galería de WordPress (/wp-content/uploads/).
 function readerImages(content) {
@@ -320,6 +394,7 @@ function pageNodes(p, i, pre) {
 // guarda en kino.storage («serie:<slug>»); del estado de la pantalla
 // solo viaja el meta.
 async function loadSeries(site, slug, force) {
+  if (site.kind === "tmo") return loadSeriesTmo(site, slug, force);
   if (!slugValido(slug)) throw kino.error("arguments", "slug");
   const ck = "serie:" + site.id + ":" + slug;
   if (!force) {
@@ -539,7 +614,7 @@ const CARDINFO = {};
 function rememberCard(it, siteId) {
   try {
     if (it && it.slug && CARDINFO[it.slug] === undefined) {
-      CARDINFO[it.slug] = { title: it.title || "", poster: it.poster || "", s: siteId || "" };
+      CARDINFO[it.slug] = { title: it.title || "", poster: it.poster || "", s: siteId || "", u: it.url || "" };
       const ks = Object.keys(CARDINFO);
       if (ks.length > 300) delete CARDINFO[ks[0]];
     }
@@ -658,21 +733,16 @@ function historyList(state) {
 // 12 al abrir + hasta 48 más con «Ver más».
 const GENERO_MAX = 48;
 
-// Fila de chips para cambiar de fuente (patrón de pestañas de
-// MangaTrack): la activa marcada, el resto como botones.
+// Selector de fuente (patrón de pestañas de MangaTrack): chips de
+// selección única de Kino — la fuente activa queda resaltada y se
+// cambia con un toque.
 function chipsRow(state) {
-  const actual = siteDe(state).id;
   return {
-    type: "SingleChildScrollView", key: "chips", direction: "horizontal", padding: 12,
-    children: [{
-      type: "Row", gap: 8, children: SITES.map((s) => (
-        actual === s.id
-          ? { type: "Badge", key: "chip-" + s.id, text: "● " + s.name }
-          : { type: "TextButton", key: "chip-" + s.id, icon: "swap_horiz",
-              labelText: s.name, labelTextEn: s.name,
-              onPressed: { event: "fuente", arg: s.id } }
-      )),
-    }],
+    type: "Chips", key: "fuente", padding: 12,
+    labelText: "Fuente", labelTextEn: "Source",
+    options: SITES.map((s) => ({ value: s.id, label: s.name, labelEn: s.name })),
+    value: siteDe(state).id,
+    onChanged: { event: "fuenteSel" },
   };
 }
 
@@ -1188,8 +1258,10 @@ export async function screenEvent(ev) {
     }
     // cambiar de fuente (chips): se limpian Inicio y Biblioteca; el
     // temporizador las vuelve a traer de la fuente nueva.
-    if (name === "fuente") {
-      const id = String(ev.arg || "");
+    if (name === "fuente" || name === "fuenteSel") {
+      const raw = ev.value;
+      const id = String(typeof raw === "string" ? raw
+        : (raw && (raw.fuente || raw.value)) || ev.arg || "");
       if (!SITES.some((s) => s.id === id)) return null;
       if (siteDe(state).id === id) return null;
       return { state: { fuente: id, cats: {}, libItems: null, libPage: 1,
@@ -1392,10 +1464,11 @@ export async function screenEvent(ev) {
       const site = siteOfId(d.siteId) || siteDe(state);
       const images = await paginasDe(site, d.slug);
       if (!images.length) return { toast: "No se encontraron páginas en este cómic." };
-      markRead(d.slug, d.meta.title, d.meta.poster, "Cómic",
-        site.base + "/" + site.comicPath + d.slug + "/", site.id);
+      const urlComic = (CARDINFO[d.slug] && CARDINFO[d.slug].u) ||
+        site.base + "/" + site.comicPath + d.slug + "/";
+      markRead(d.slug, d.meta.title, d.meta.poster, "Cómic", urlComic, site.id);
       const reader = { slug: d.slug, title: d.meta.title, poster: d.meta.poster,
-        chUrl: site.base + "/" + site.comicPath + d.slug + "/", imgs: images, tk: ++navSeq };
+        chUrl: urlComic, imgs: images, tk: ++navSeq };
       return { state: { reader: reader }, route: { push: "read" } };
     }
     if (name === "modoLector") {

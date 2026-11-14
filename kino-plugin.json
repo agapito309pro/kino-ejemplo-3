@@ -3,7 +3,7 @@
   "name": "ComicTrack",
   "author": "Hotaru Yume",
   "creator": "hotaruyume",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "apiVersion": 14,
   "entry": "plugin.js",
   "icon": "icon.png",
@@ -11,15 +11,27 @@
     "vermangasporno.com",
     "www.vermangasporno.com",
     "kingcomix.com",
-    "www.kingcomix.com"
+    "www.kingcomix.com",
+    "tmohentai.app",
+    "www.tmohentai.app",
+    "storage.tmohentai.app",
+    "image.tmohentai.app"
   ],
-  "capabilities": ["screen", "shared"],
-  "categories": ["adult"],
+  "capabilities": [
+    "screen",
+    "shared"
+  ],
+  "categories": [
+    "adult"
+  ],
   "screen": {
     "label": "ComicTrack",
     "labelEn": "ComicTrack",
     "menuOpens": "screen",
-    "opensFrom": ["menu", "settings"],
+    "opensFrom": [
+      "menu",
+      "settings"
+    ],
     "icon": "menu_book",
     "adult": true
   }
