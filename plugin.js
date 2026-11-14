@@ -1,8 +1,9 @@
-// Plugin de Kino para chochox.com.
+// Plugin de Kino multi-fuente (sitios WordPress de cómics).
 // Interfaz tipo lector de manga: Inicio, Biblioteca, Favoritos,
-// Historial, detalle de cómic y lector vertical. Basado en la
-// arquitectura del plugin Yuri Online (de Hotaru Yume), que a su vez
-// sigue el patrón de ZonaTM0/MangaTrack:
+// Historial, detalle de cómic y lector vertical, con FUENTES
+// conmutables por chips (patrón de pestañas de MangaTrack, de
+// Susejing). Basado en la arquitectura del plugin Yuri Online (de
+// Hotaru Yume), que a su vez sigue el patrón de ZonaTM0/MangaTrack:
 //   - Inicio por categorías: secciones por etiqueta debajo de «Seguir
 //     leyendo» y «Mis favoritos», sin repetidos y con «Ver más».
 //   - Nada bloquea la pantalla: detalle, Inicio y Biblioteca se pintan
@@ -12,54 +13,130 @@
 //     flotante; «Volver al detalle» está en la tarjeta del final.
 //   - Las páginas viven en kino.storage: el estado de la pantalla
 //     queda mínimo y los cómics largos no desbordan el límite de Kino.
-// Capa del sitio (WordPress chochox.com) con DOBLE CAMINO — si uno
+// Capa de datos por sitio (WordPress) con DOBLE CAMINO — si uno
 // falla (sitio caído, filtro del servidor, red lenta), se usa el otro:
 //   1. API REST (liviana y estructurada):
-//      - Listados y búsqueda: /wp-json/wp/v2/posts?…
-//      - Secciones:           /wp-json/wp/v2/posts?tags=<id>…
-//      - Cómic y lectura:     /wp-json/wp/v2/posts?slug=<slug>…
+//      - Listados y búsqueda: /wp-json/wp/v2/posts?…  (+_embed: portada)
+//      - Secciones:           /wp-json/wp/v2/posts?<tax>=<id>…
+//      - Cómic:               /wp-json/wp/v2/posts?slug=<slug>…
+//      - Páginas en orden:    /wp-json/wp/v2/media?parent=<id>…
 //   2. HTML de las páginas del sitio (como el plugin Yuri Online):
-//      - Listados:  /porno/page/N/  ·  Secciones: /tag/<slug>/
-//      - Búsqueda:  /?s=<q>
-//      - Cómic:     /<slug>/ (metadatos og:* y galería de imágenes)
+//      - Listados:  /page/N/  ·  Búsqueda:  /?s=<q>
+//      - Cómic:     metadatos og:* y galería de imágenes
 // Marcaje de contenido: el manifiesto declara «categories: ["adult"]»
 // y «screen.adult: true», y cada tarjeta lleva «adult: true» — lo que
 // Kino exige para aplicar su filtro parental. El plugin nunca intenta
 // detectar ni saltarse ese bloqueo.
 //
-// Requiere Kino 0.9.74 o superior (apiVersion 14, capability "screen").
+// Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
+// "screen" y "shared").
 //
-// v1.0.1 — correcciones de carga:
-//   - Peticiones más livianas (12 cómics por listado, tiempos límite
-//     cortos) y cabeceras de navegador.
-//   - Respaldo HTML cuando la API REST no responde.
-//   - Errores VISIBLES: cada sección, la Biblioteca y la búsqueda
-//     distinguen «sin resultados» de «fallo de conexión» y ofrecen
-//     «Reintentar»; nunca se queda cargando para siempre.
-//   - El temporizador de Inicio ya no acumula ticks si una carga
-//     tarda (un solo intento en marcha a la vez).
+// v2.0.0 — multi-fuente:
+//   - Dos fuentes conmutables con chips (VerMangasPorno en español y
+//     KingComix), misma receta de datos para las dos.
+//   - Páginas de cada cómic por el endpoint de adjuntos (orden de
+//     lectura ascendente), con la galería del contenido de respaldo.
+//   - Portadas de los listados por _embedded (destacada del post).
+//   - Se conservan todas las correcciones de v1.0.1 (peticiones
+//     livianas, respaldo HTML, errores visibles con «Reintentar»,
+//     temporizador sin ticks apilados).
 
-const BASE = "https://chochox.com";
-const API = BASE + "/wp-json/wp/v2";
+const UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36";
 const PER_PAGE = 12; // cómics por página de listado (respuestas livianas)
 const LIB_MAX = 144; // tope de cómics acumulados en la Biblioteca (estado pequeño)
 const PAGES_MAX = 300; // tope de páginas por cómic (límite de nodos de Kino)
+const MEDIA_PER = 100; // adjuntos por petición (tope REST de WordPress)
 
-// cabeceras comunes: el sitio filtra clientes sin cabeceras de navegador
-const HEADERS = {
-  Accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-  "Accept-Language": "es",
-  Referer: BASE + "/",
-  "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
-};
+// Las fuentes. «tax» de cada sección: taxonomy REST de WordPress.
+// «cardRe»: expresión para el respaldo HTML (grupo 1 = URL, 2 = slug).
+const SITES = [
+  {
+    id: "vmp", name: "VerMangasPorno", base: "https://vermangasporno.com",
+    comicPath: "doujins/",
+    cardRe: 'href="(https:\\/\\/vermangasporno\\.com\\/doujins\\/([a-z0-9][a-z0-9-]{3,})\\/)"',
+    sections: [
+      { key: "v100", tax: "tags", id: 100, label: "Manga Hentai", labelEn: "Hentai Manga" },
+      { key: "v4c", tax: "categories", id: 4, label: "Sin Censura", labelEn: "Uncensored" },
+      { key: "v9", tax: "tags", id: 9, label: "Big Breasts", labelEn: "Big Breasts" },
+      { key: "v3c", tax: "categories", id: 3, label: "Full Color", labelEn: "Full Color" },
+      { key: "v32", tax: "tags", id: 32, label: "BlowJob", labelEn: "BlowJob" },
+      { key: "v17", tax: "tags", id: 17, label: "Nakadashi", labelEn: "Nakadashi" },
+    ],
+  },
+  {
+    id: "kc", name: "KingComix", base: "https://kingcomix.com",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/kingcomix\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/)"',
+    sections: [
+      { key: "k1c", tax: "categories", id: 1, label: "Novedades", labelEn: "Latest" },
+      { key: "k12c", tax: "categories", id: 12, label: "Furry", labelEn: "Furry" },
+      { key: "k3c", tax: "categories", id: 3, label: "Hentai Manga", labelEn: "Hentai Manga" },
+      { key: "k46c", tax: "categories", id: 46, label: "Dragon Ball", labelEn: "Dragon Ball" },
+      { key: "k229c", tax: "categories", id: 229, label: "Pokemon", labelEn: "Pokemon" },
+      { key: "k169c", tax: "categories", id: 169, label: "Naruto", labelEn: "Naruto" },
+      { key: "k244c", tax: "categories", id: 244, label: "My Hero Academia", labelEn: "My Hero Academia" },
+    ],
+  },
+];
+
+function siteDe(state) {
+  const id = state && state.fuente;
+  return SITES.find((s) => s.id === id) || SITES[0];
+}
+
+function siteOfId(id) {
+  return SITES.find((s) => s.id === id) || SITES[0];
+}
+
+// orden natural por el primer número del nombre de archivo (main01 <
+// main02 < main106); estable si alguno no tiene número
+function sortPages(pages) {
+  const num = (u) => {
+    const f = String(u).split("/").pop() || "";
+    const m = f.match(/\d+/);
+    return m ? parseInt(m[0], 10) : -1;
+  };
+  return pages.map((p, i) => [p, i])
+    .sort((a, b) => (num(typeof a[0] === "string" ? a[0] : a[0].url) - num(typeof b[0] === "string" ? b[0] : b[0].url)) || (a[1] - b[1]))
+    .map((x) => x[0]);
+}
+
+// Páginas de un cómic por el endpoint de adjuntos de WordPress, en
+// orden de lectura (fecha ascendente), con orden natural de nombre de
+// archivo. Hasta MEDIA_PAGES peticiones (100 adjuntos cada una).
+async function mediaPages(site, postId) {
+  const out = [];
+  for (let pg = 1; pg <= 3 && out.length < PAGES_MAX; pg++) {
+    const arr = await getApi(site, "/media?parent=" + postId +
+      "&per_page=" + MEDIA_PER + "&page=" + pg +
+      "&orderby=date&order=asc&_fields=source_url", 20000);
+    if (!Array.isArray(arr) || !arr.length) break;
+    for (const m of arr) {
+      if (m && m.source_url && /\.(webp|jpe?g|png|gif)(\?|$)/i.test(m.source_url)) {
+        out.push(m.source_url);
+        if (out.length >= PAGES_MAX) break;
+      }
+    }
+  }
+  return out.length ? sortPages(out.map((u) => ({ url: u }))).map((x) => x.url) : [];
+}
+
+function headersDe(site) {
+  return {
+    Accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es",
+    Referer: site.base + "/",
+    "User-Agent": UA,
+  };
+}
 
 // ---------------------------------------------------------------- red
 
 // Petición JSON a la API REST. Lanza un error «network» si el sitio no
 // responde o devuelve algo que no es JSON.
-async function getApi(path, timeoutMs) {
-  const r = await kino.fetch(API + path, {
-    headers: HEADERS,
+async function getApi(site, path, timeoutMs) {
+  const r = await kino.fetch(site.base + "/wp-json/wp/v2" + path, {
+    headers: headersDe(site),
     timeoutMs: timeoutMs || 15000,
   });
   if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
@@ -75,9 +152,9 @@ async function getApi(path, timeoutMs) {
 }
 
 // Petición HTML a una página del sitio (respaldo).
-async function getHtml(path, timeoutMs) {
-  const r = await kino.fetch(BASE + path, {
-    headers: HEADERS,
+async function getHtml(site, path, timeoutMs) {
+  const r = await kino.fetch(site.base + path, {
+    headers: headersDe(site),
     timeoutMs: timeoutMs || 20000,
   });
   if (!r.ok) throw kino.error("network", "HTTP " + r.status, {
@@ -89,25 +166,24 @@ async function getHtml(path, timeoutMs) {
 // Listado de cómics con doble camino: primero la API REST; si falla o
 // no trae nada, el HTML de la página correspondiente. Devuelve SIEMPRE
 // una lista o lanza «network» (para que la pantalla muestre el error).
-async function getCards(page, q, tag) {
+async function getCards(site, page, q, sec) {
   const p = parseInt(page, 10) || 1;
-  // 1) REST
+  // 1) REST (con _embed: trae la portada destacada de cada cómic)
   try {
     let path;
-    if (tag) path = "/posts?tags=" + tag.id + "&per_page=" + PER_PAGE + "&page=" + p;
-    else if (q) path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + PER_PAGE + "&page=" + p;
-    else path = "/posts?per_page=" + PER_PAGE + "&page=" + p;
-    const arr = await getApi(path, 12000);
-    if (Array.isArray(arr) && arr.length) return postsToCards(arr);
+    if (sec) path = "/posts?" + sec.tax + "=" + sec.id + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+    else if (q) path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+    else path = "/posts?per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+    const arr = await getApi(site, path, 12000);
+    if (Array.isArray(arr) && arr.length) return postsToCards(arr, site);
     if (Array.isArray(arr) && !q) return []; // página pasada de la vuelta: fin real
   } catch (e) { kino.log("rest", e.message); }
   // 2) HTML (respaldo)
   let htmlPath;
-  if (tag) htmlPath = "/tag/" + tag.slug + "/" + (p > 1 ? "page/" + p + "/" : "");
-  else if (q) htmlPath = "/?s=" + encodeURIComponent(q);
-  else htmlPath = "/porno/" + (p > 1 ? "page/" + p + "/" : "");
-  const html = await getHtml(htmlPath, 20000);
-  return htmlCards(html, 40);
+  if (q) htmlPath = "/?s=" + encodeURIComponent(q);
+  else htmlPath = "/page/" + p + "/";
+  const html = await getHtml(site, htmlPath, 20000);
+  return htmlCards(html, 40, site);
 }
 
 // ------------------------------------------------------------- scraping
@@ -125,26 +201,33 @@ function decode(s) {
 }
 
 // Primera imagen del contenido (la portada: la página 1 del cómic).
+// Genérica: cualquier galería de WordPress (/wp-content/uploads/).
 function firstImg(content) {
   const m = String(content || "").match(
-    /src="(https:\/\/chochox\.com\/wp-content\/uploads\/[^"]+?\.(?:webp|jpe?g|png|gif))"/);
+    /src="?(https?:\/\/[^"\s]*?\/wp-content\/uploads\/[^"\s]+?\.(?:webp|jpe?g|png|gif))/);
   return m ? m[1] : "";
 }
 
-// Entradas del REST → tarjetas. Cada tarjeta lleva «adult: true»
-// (marca que Kino exige para su filtro parental).
-function postsToCards(arr) {
+// Entradas del REST → tarjetas. Portada: la imagen destacada
+// (_embedded, que trae el _embed del listado); si no, la primera del
+// contenido. Cada tarjeta lleva «adult: true» (marca que Kino exige
+// para su filtro parental).
+function postsToCards(arr, site) {
   const out = [];
   const seen = {};
   for (const p of arr || []) {
     if (!p || !p.slug || seen[p.slug]) continue;
     seen[p.slug] = true;
     const content = p.content && p.content.rendered ? p.content.rendered : "";
+    let poster = "";
+    const emb = p._embedded && p._embedded["wp:featuredmedia"] && p._embedded["wp:featuredmedia"][0];
+    if (emb && emb.source_url) poster = emb.source_url;
+    if (!poster) poster = firstImg(content);
     out.push({
       slug: p.slug,
-      url: p.link || BASE + "/" + p.slug + "/",
+      url: p.link || site.base + "/" + p.slug + "/",
       title: decode(p.title && p.title.rendered ? p.title.rendered : p.slug),
-      poster: firstImg(content),
+      poster: poster,
       adult: true,
     });
   }
@@ -161,21 +244,21 @@ const NO_SERIE = {
   "sobre-nosotros": true, 18: true, en: true,
 };
 
-// Tarjetas desde el HTML de un listado (respaldo): enlaces de un solo
-// segmento «https://chochox.com/<slug>/» que no sean páginas fijas,
-// con la primera imagen cercana como portada y el texto del enlace
-// (o el alt de la imagen) como título.
-function htmlCards(html, max) {
+// Tarjetas desde el HTML de un listado (respaldo): enlaces de cómic
+// según el patrón de cada sitio, que no sean páginas fijas, con la
+// primera imagen cercana como portada y el texto del enlace (o el alt
+// de la imagen) como título.
+function htmlCards(html, max, site) {
   const out = [];
   const seen = {};
-  const re = /href="(https:\/\/chochox\.com\/([a-z0-9][a-z0-9-]{4,})\/)"/g;
+  const re = new RegExp(site.cardRe, "g");
   let m;
   while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
     const url = m[1], slug = m[2];
     if (seen[slug] || NO_SERIE[slug]) continue;
     seen[slug] = true;
     const win = html.slice(m.index, m.index + 2500);
-    const im = win.match(/<img[^>]+(?:data-src|src)="(https:\/\/chochox\.com\/wp-content\/uploads\/[^"]+?\.(?:webp|jpe?g|png|gif))"/);
+    const im = win.match(/<img[^>]+(?:data-src|src)="(https?:\/\/[^"\s]*?\/wp-content\/uploads\/[^"\s]+?\.(?:webp|jpe?g|png|gif))"/);
     let title = "";
     const tre = new RegExp('href="' + url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"[^>]*>([^<]{1,150})<', "g");
     let t;
@@ -190,11 +273,11 @@ function htmlCards(html, max) {
 }
 
 // Imágenes de un cómic (galería del contenido, en orden de lectura).
-// Funciona igual sobre el HTML de la entrada o sobre content.rendered.
+// Genérica: cualquier galería de WordPress (/wp-content/uploads/).
 function readerImages(content) {
   const html = String(content || "");
   const out = [], seen = {};
-  const re = /src="(https:\/\/chochox\.com\/wp-content\/uploads\/[^"]+?\.(?:webp|jpe?g|png|gif))"/g;
+  const re = /src="?(https?:\/\/[^"\s]*?\/wp-content\/uploads\/[^"\s]+?\.(?:webp|jpe?g|png|gif))"/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     if (seen[m[1]]) continue;
@@ -236,9 +319,9 @@ function pageNodes(p, i, pre) {
 // (force=true la salta). Tope de PAGES_MAX páginas. Lo pesado se
 // guarda en kino.storage («serie:<slug>»); del estado de la pantalla
 // solo viaja el meta.
-async function loadSeries(slug, force) {
+async function loadSeries(site, slug, force) {
   if (!slugValido(slug)) throw kino.error("arguments", "slug");
-  const ck = "serie:" + slug;
+  const ck = "serie:" + site.id + ":" + slug;
   if (!force) {
     try {
       const c = getJson(ck, null);
@@ -249,10 +332,10 @@ async function loadSeries(slug, force) {
     } catch (e) { /* caché rota: se recarga */ }
   }
   let meta = null, pages = [];
-  // 1) REST (estructurado)
+  // 1) REST (estructurado): metadatos por slug; páginas por adjuntos
   try {
-    const arr = await getApi("/posts?slug=" + encodeURIComponent(slug) +
-      "&_fields=title,content,excerpt", 30000);
+    const arr = await getApi(site, "/posts?slug=" + encodeURIComponent(slug) +
+      "&_fields=id,title,content,excerpt", 30000);
     const p = arr && arr.length ? arr[0] : null;
     if (p) {
       const content = p.content && p.content.rendered ? p.content.rendered : "";
@@ -262,14 +345,17 @@ async function loadSeries(slug, force) {
         overview: decode(p.excerpt && p.excerpt.rendered ? p.excerpt.rendered : "").slice(0, 600),
         adult: true,
       };
-      pages = readerImages(content);
+      try { pages = await mediaPages(site, p.id); } catch (e) { kino.log("media", e.message); }
+      if (!pages.length) pages = readerImages(content).map((x) => x.url);
+      if (!meta.poster && pages.length) meta.poster = pages[0];
     }
   } catch (e) { kino.log("rest", e.message); }
   // 2) HTML de la entrada (respaldo)
   if (!pages.length) {
-    const html = await getHtml("/" + slug + "/", 30000);
+    const html = await getHtml(site, "/" + site.comicPath + slug + "/", 30000);
     meta = seriesMetaHtml(html, slug);
-    pages = readerImages(html);
+    pages = readerImages(html).map((x) => x.url);
+    if (!meta.poster && pages.length) meta.poster = pages[0];
   }
   if (!pages.length) throw kino.error("not_found", "comic", {
     userMessage: "No se encontraron páginas para ese cómic.",
@@ -288,9 +374,9 @@ async function loadSeries(slug, force) {
 // páginas de un cómic desde kino.storage (sin caducidad: la lista
 // completa no viaja nunca en el estado de la pantalla). null si no
 // está en caché.
-function pagesDe(slug) {
+function pagesDe(site, slug) {
   if (!slugValido(slug)) return null;
-  const c = getJson("serie:" + slug, null);
+  const c = getJson("serie:" + site.id + ":" + slug, null);
   return (c && Array.isArray(c.pages)) ? c.pages : null;
 }
 
@@ -299,14 +385,15 @@ function pagesDe(slug) {
 // Al estado solo va el meta — las páginas quedan en kino.storage y
 // detailTree las lee de ahí.
 async function cargarDetalle(state, slug, force) {
+  const site = siteOfId(state.detail && state.detail.siteId) || siteDe(state);
   const prev = (state.detail && state.detail.slug === slug) ? state.detail : null;
   const meta0 = (prev && prev.meta) || {};
   try {
-    const d = await loadSeries(slug, force);
-    return { state: { detail: { slug: slug, meta: d.meta } } };
+    const d = await loadSeries(site, slug, force);
+    return { state: { detail: { slug: slug, siteId: site.id, meta: d.meta } } };
   } catch (e) {
     kino.log("detalle", e.message);
-    return { state: { detail: { slug: slug, error: true, meta: meta0 } } };
+    return { state: { detail: { slug: slug, siteId: site.id, error: true, meta: meta0 } } };
   }
 }
 
@@ -325,9 +412,9 @@ function favs() { return getJson("favs", []); }
 function isFav(slug) { return favs().some((f) => f.slug === slug); }
 function progress() { return getJson("prog", {}); }
 
-function markRead(slug, title, poster, chTitle, url) {
+function markRead(slug, title, poster, chTitle, url, siteId) {
   const p = progress();
-  p[slug] = { title: title, poster: poster, chTitle: chTitle, url: url, ts: Date.now() };
+  p[slug] = { title: title, poster: poster, chTitle: chTitle, url: url, ts: Date.now(), s: siteId || "" };
   setJson("prog", p);
   syncPush("prog", p);
 }
@@ -410,12 +497,12 @@ function readerCachePut(url, urls) {
 
 // páginas de un cómic (lista de URLs de imagen) — primero la caché
 // del lector, si no la de «serie:», si no la red. Si no hay, [].
-async function paginasDe(slug) {
+async function paginasDe(site, slug) {
   const c = readerCache(slug);
   if (Array.isArray(c) && c.length) return c;
-  const guardadas = pagesDe(slug);
+  const guardadas = pagesDe(site, slug);
   if (guardadas && guardadas.length) { readerCachePut(slug, guardadas); return guardadas; }
-  const d = await loadSeries(slug, false);
+  const d = await loadSeries(site, slug, false);
   const urls = (d.pages || []).map((x) => (typeof x === "string" ? x : x.url));
   if (urls.length) readerCachePut(slug, urls);
   return urls;
@@ -449,18 +536,18 @@ function twoLines(t) {
 // Título/portada de las tarjetas vistas, para pintar el detalle al
 // instante (antes de que llegue la página del cómic).
 const CARDINFO = {};
-function rememberCard(it) {
+function rememberCard(it, siteId) {
   try {
     if (it && it.slug && CARDINFO[it.slug] === undefined) {
-      CARDINFO[it.slug] = { title: it.title || "", poster: it.poster || "" };
+      CARDINFO[it.slug] = { title: it.title || "", poster: it.poster || "", s: siteId || "" };
       const ks = Object.keys(CARDINFO);
       if (ks.length > 300) delete CARDINFO[ks[0]];
     }
   } catch (e) { /* sin memoria */ }
 }
 
-function posterCard(it, prefix, rail) {
-  rememberCard(it);
+function posterCard(it, prefix, rail, siteId) {
+  rememberCard(it, siteId);
   const img = {
     type: "Image", url: it.poster || "", aspect: "2:3",
     alt: it.title, altEn: it.title,
@@ -511,12 +598,12 @@ function filaError(mensaje, evento) {
     ] }] };
 }
 
-function titleGridOf(items, eventMore, loading, done, emptyNode) {
+function titleGridOf(items, eventMore, loading, done, emptyNode, siteId) {
   if (!items || !items.length) return emptyNode || EMPTY_LIB;
   const list = {
     type: "ListView", key: "grid",
     columns: { compact: 3, medium: 4, expanded: 6 },
-    items: items.map((it) => posterCard(it, "c-")),
+    items: items.map((it) => posterCard(it, "c-", false, siteId || it.s)),
   };
   if (eventMore && !done) {
     list.onEndReached = { event: eventMore };
@@ -565,25 +652,34 @@ function historyList(state) {
 
 // ------------------------------------------------- categorías (como ZonaTM0)
 
-// Las secciones del Inicio: etiquetas del sitio, con su id (API REST)
-// y su slug (HTML de respaldo).
-const GENEROS_INICIO = [
-  { key: "t603", tag: 603, slug: "parodias-porno-comics-porno", label: "Parodias Porno", labelEn: "Porn Parodies" },
-  { key: "t601", tag: 601, slug: "full-color-xxx", label: "Full Color", labelEn: "Full Color" },
-  { key: "t619", tag: 619, slug: "furry-hentai-comics-xxx-porno", label: "Furry Hentai", labelEn: "Furry Hentai" },
-  { key: "t744", tag: 744, slug: "comics-3d", label: "Comics 3D", labelEn: "3D Comics" },
-  { key: "t594", tag: 594, slug: "dragon-ball-porno", label: "Dragon Ball", labelEn: "Dragon Ball" },
-  { key: "t615", tag: 615, slug: "naruto-hentai-xxxx", label: "Naruto", labelEn: "Naruto" },
-];
+// Las secciones del Inicio son «sections» de cada fuente (SITES).
 
 // Tope de cómics por sección en el estado (que viaja en la pantalla):
 // 12 al abrir + hasta 48 más con «Ver más».
 const GENERO_MAX = 48;
 
+// Fila de chips para cambiar de fuente (patrón de pestañas de
+// MangaTrack): la activa marcada, el resto como botones.
+function chipsRow(state) {
+  const actual = siteDe(state).id;
+  return {
+    type: "SingleChildScrollView", key: "chips", direction: "horizontal", padding: 12,
+    children: [{
+      type: "Row", gap: 8, children: SITES.map((s) => (
+        actual === s.id
+          ? { type: "Badge", key: "chip-" + s.id, text: "● " + s.name }
+          : { type: "TextButton", key: "chip-" + s.id, icon: "swap_horiz",
+              labelText: s.name, labelTextEn: s.name,
+              onPressed: { event: "fuente", arg: s.id } }
+      )),
+    }],
+  };
+}
+
 // Una sección por etiqueta: tarjetas + «Ver más» al final. «usados» es
 // el mapa compartido entre secciones: un cómic que ya salió en una
 // sección anterior NO se repite.
-function railGenero(state, g, usados) {
+function railGenero(state, g, usados, siteId) {
   const cats = state.cats || {};
   const cat = cats[g.key] || null;
   if (!cat) {
@@ -611,7 +707,7 @@ function railGenero(state, g, usados) {
   for (const it of items.slice(0, 60)) {
     if (usados[it.slug]) continue;
     usados[it.slug] = true;
-    cards.push(posterCard(it, "g" + g.key + "-", true));
+    cards.push(posterCard(it, "g" + g.key + "-", true, siteId));
   }
   if (!cards.length) return [];
   if (items.length < GENERO_MAX && !cat.error) {
@@ -643,10 +739,11 @@ function tabBody(state) {
     return titleGridOf(items, "libMore", state.libLoading === true, state.libDone === true);
   }
   // inicio
+  const site = siteDe(state);
   const rail = (title, titleEn, key, list) => list.length ? [
     { type: "Text", text: title, textEn: titleEn, style: "h3", padding: 16 },
     { type: "SingleChildScrollView", key: key, direction: "horizontal", padding: 16,
-      children: [{ type: "Row", gap: 8, children: list.slice(0, 60).map((it) => posterCard(it, key + "-", true)) }] },
+      children: [{ type: "Row", gap: 8, children: list.slice(0, 60).map((it) => posterCard(it, key + "-", true, it.s)) }] },
   ] : [];
   const prog = progress();
   const leyendo = Object.keys(prog)
@@ -654,10 +751,10 @@ function tabBody(state) {
     .filter((x) => x.title)
     .sort((a, b) => b.ts - a.ts)
     .slice(0, 20);
-  // secciones por etiqueta, sin repetidos entre ellas
+  // secciones por etiqueta de la fuente activa, sin repetidos entre ellas
   const usados = {};
   let secciones = [];
-  for (const g of GENEROS_INICIO) secciones = secciones.concat(railGenero(state, g, usados));
+  for (const g of site.sections) secciones = secciones.concat(railGenero(state, g, usados, site.id));
   return {
     type: "SingleChildScrollView", key: "home", flex: 1,
     children: [{
@@ -667,6 +764,7 @@ function tabBody(state) {
           subtitle: "Por título, p. ej. Chloe", subtitleEn: "By title, e.g. Chloe",
           trailing: { type: "Icon", name: "arrow_forward" },
           onTap: { event: "goSearch" } },
+        chipsRow(state),
       ].concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
         .concat(rail("Mis favoritos", "My favourites", "favs", favs()))
         .concat(secciones),
@@ -674,9 +772,9 @@ function tabBody(state) {
   };
 }
 
-// Biblioteca: los cómics más nuevos del sitio, paginados
-async function fetchLibrary(page) {
-  return getCards(page, "", null);
+// Biblioteca: los cómics más nuevos de la fuente activa, paginados
+async function fetchLibrary(site, page) {
+  return getCards(site, page, "", null);
 }
 
 // ------------------------------------------------------------- rutas
@@ -787,7 +885,8 @@ async function detailTree(state) {
         onPressed: { event: "popBack" } });
   }
   // la lista de páginas vive en kino.storage, no en el estado
-  const pages = pagesDe(d.slug) || [];
+  const site = siteOfId(d.siteId) || siteDe(state);
+  const pages = pagesDe(site, d.slug) || [];
   if (!pages.length) {
     return { type: "Column", padding: 32, gap: 12, crossAxisAlignment: "center", children: [
       { type: "Icon", name: "error", color: "muted" },
@@ -1000,6 +1099,7 @@ async function searchTree(state) {
               required: true },
             { type: "ElevatedButton", icon: "search", labelText: "Buscar", labelTextEn: "Search", submit: true },
           ] },
+          chipsRow(state),
           state.searchError
             ? filaError("No se pudo buscar. Comprueba tu conexión.", "reintentarSearch")
             : (results
@@ -1021,7 +1121,7 @@ export async function screen({ state, route }) {
       if (!state.detail || state.detail.slug !== slug) {
         // el detalle del estado no es el de esta ruta; se pinta la
         // vista de esqueletos y el temporizador corrige el estado.
-        return detailLoadingTree(detailLoadingDe(slug));
+        return detailLoadingTree(detailLoadingDe(slug, state));
       }
       return await detailTree(state);
     }
@@ -1036,7 +1136,7 @@ export async function screen({ state, route }) {
     type: "Scaffold",
     every: { ms: 1500, event: "cargarRoot" },
     appBar: {
-      title: "ChoChoX",
+      title: siteDe(state).name,
       actions: [
         { type: "IconButton", icon: "search", key: "goSearch", labelText: "Buscar", labelTextEn: "Search", onPressed: { event: "goSearch" } },
       ],
@@ -1062,10 +1162,10 @@ let slugDetalleActivo = null;
 // siguientes no se apilan (antes podían pisarse entre sí).
 let rootEnCarga = false;
 
-function detailLoadingDe(slug) {
+function detailLoadingDe(slug, state) {
   const info = CARDINFO[slug] || {};
   slugDetalleActivo = slug;
-  return { slug: slug, loading: true,
+  return { slug: slug, siteId: (info && info.s) || (siteDe(state).id), loading: true,
     meta: { title: info.title || "", poster: info.poster || "" } };
 }
 
@@ -1081,10 +1181,20 @@ export async function screenEvent(ev) {
         if (slug && slugValido(slug) && (!state.detail || state.detail.slug !== slug)) {
           // no se bloquea; el detalle se pinta ya con esqueletos y el
           // temporizador «cargarSerie» trae las páginas.
-          return { state: { detail: detailLoadingDe(slug) } };
+          return { state: { detail: detailLoadingDe(slug, state) } };
         }
       }
       return null;
+    }
+    // cambiar de fuente (chips): se limpian Inicio y Biblioteca; el
+    // temporizador las vuelve a traer de la fuente nueva.
+    if (name === "fuente") {
+      const id = String(ev.arg || "");
+      if (!SITES.some((s) => s.id === id)) return null;
+      if (siteDe(state).id === id) return null;
+      return { state: { fuente: id, cats: {}, libItems: null, libPage: 1,
+        libError: false, libDone: false, libLoading: false },
+        toast: "Fuente: " + siteOfId(id).name };
     }
     if (name === "tab") {
       // cambiar de pestaña no espera a la red; si falta la lista, el
@@ -1095,11 +1205,12 @@ export async function screenEvent(ev) {
     if (name === "cargarRoot") {
       if (rootEnCarga) return null;
       const tab = state.tab || "inicio";
+      const site = siteDe(state);
       if (tab === "biblioteca") {
         if (Array.isArray(state.libItems)) return null;
         rootEnCarga = true;
         try {
-          const items = await fetchLibrary(1);
+          const items = await fetchLibrary(site, 1);
           return { state: { libItems: items, libPage: 1, libError: false, libDone: items.length < PER_PAGE } };
         } catch (e) {
           return { state: { libError: true } };
@@ -1110,12 +1221,12 @@ export async function screenEvent(ev) {
       if (tab === "inicio") {
         // UNA sección por tick — la pantalla nunca se bloquea
         const cats = state.cats || {};
-        for (const g of GENEROS_INICIO) {
+        for (const g of site.sections) {
           if (!cats[g.key] || (cats[g.key] && cats[g.key].error)) {
             rootEnCarga = true;
             let items = [], fallo = false;
             try {
-              items = await getCards(1, "", g);
+              items = await getCards(site, 1, "", g);
             } catch (e) { fallo = true; } finally { rootEnCarga = false; }
             return { state: { cats: Object.assign({}, cats, { [g.key]: { items: items, page: 1, error: fallo } }) } };
           }
@@ -1144,7 +1255,7 @@ export async function screenEvent(ev) {
       const q = typeof state.resultsQ === "string" ? state.resultsQ : "";
       if (!q) return null;
       try {
-        const results = await getCards(1, q, null);
+        const results = await getCards(siteDe(state), 1, q, null);
         return { state: { results: results, searchError: false },
           toast: results.length ? results.length + " resultados" : "Sin resultados" };
       } catch (e) {
@@ -1159,7 +1270,7 @@ export async function screenEvent(ev) {
       // viendo (quedó el del cómic anterior), se corrige aquí y el
       // siguiente tick lo carga.
       if (slugDetalleActivo && d.slug !== slugDetalleActivo) {
-        return { state: { detail: detailLoadingDe(slugDetalleActivo) } };
+        return { state: { detail: detailLoadingDe(slugDetalleActivo, state) } };
       }
       if (!d.loading) return null;
       if (serieEnCarga === d.slug && name === "cargarSerie") return null;
@@ -1178,7 +1289,7 @@ export async function screenEvent(ev) {
     }
     if (name === "libMore") {
       const page = (state.libPage || 1) + 1;
-      const more = await fetchLibrary(page);
+      const more = await fetchLibrary(siteDe(state), page);
       let merged = (state.libItems || []).concat(more.filter((x) => !(state.libItems || []).some((y) => y.slug === x.slug)));
       if (merged.length > LIB_MAX) merged = merged.slice(0, LIB_MAX);
       return { state: { libItems: merged, libPage: page, libDone: more.length < PER_PAGE || merged.length >= LIB_MAX } };
@@ -1190,7 +1301,7 @@ export async function screenEvent(ev) {
       if (!q) return { toast: "Escribe un título." };
       let results;
       try {
-        results = await getCards(1, q, null);
+        results = await getCards(siteDe(state), 1, q, null);
       } catch (e) {
         // fallo de conexión: error VISIBLE con reintentar — nunca
         // «sin resultados», que confunde
@@ -1205,14 +1316,15 @@ export async function screenEvent(ev) {
     // esa etiqueta y la añade a la sección.
     if (name === "verMas") {
       const key = String(ev.arg || "");
-      const g = GENEROS_INICIO.find((x) => x.key === key);
+      const site = siteDe(state);
+      const g = site.sections.find((x) => x.key === key);
       const cats = state.cats || {};
       const cat = cats[key];
       if (!g || !cat) return null;
       if (cat.items.length >= GENERO_MAX) return { toast: "La sección ya está completa" };
       const page = (cat.page || 1) + 1;
       try {
-        const more = await getCards(page, "", g);
+        const more = await getCards(site, page, "", g);
         const vistos = {};
         for (const it of cat.items) vistos[it.slug] = true;
         const nuevos = more.filter((it) => !vistos[it.slug]);
@@ -1266,7 +1378,8 @@ export async function screenEvent(ev) {
       const i = f.findIndex((x) => x.slug === d.slug);
       let added = false;
       if (i >= 0) f.splice(i, 1);
-      else { f.unshift({ slug: d.slug, title: d.meta.title || d.slug, poster: d.meta.poster }); added = true; }
+      else { f.unshift({ slug: d.slug, title: d.meta.title || d.slug, poster: d.meta.poster,
+        s: d.siteId || siteDe(state).id }); added = true; }
       setJson("favs", f);
       syncPush("favs", f);
       return { toast: added ? "Añadido a favoritos" : "Quitado de favoritos" };
@@ -1276,11 +1389,13 @@ export async function screenEvent(ev) {
       // o de la red). SIEMPRE desde la primera página.
       const d = state.detail;
       if (!d) return null;
-      const images = await paginasDe(d.slug);
+      const site = siteOfId(d.siteId) || siteDe(state);
+      const images = await paginasDe(site, d.slug);
       if (!images.length) return { toast: "No se encontraron páginas en este cómic." };
-      markRead(d.slug, d.meta.title, d.meta.poster, "Cómic", BASE + "/" + d.slug + "/");
+      markRead(d.slug, d.meta.title, d.meta.poster, "Cómic",
+        site.base + "/" + site.comicPath + d.slug + "/", site.id);
       const reader = { slug: d.slug, title: d.meta.title, poster: d.meta.poster,
-        chUrl: BASE + "/" + d.slug + "/", imgs: images, tk: ++navSeq };
+        chUrl: site.base + "/" + site.comicPath + d.slug + "/", imgs: images, tk: ++navSeq };
       return { state: { reader: reader }, route: { push: "read" } };
     }
     if (name === "modoLector") {
@@ -1295,8 +1410,12 @@ export async function screenEvent(ev) {
       if (!slugValido(slug)) return null;
       // (receta MangaTrack): el detalle se abre AL INSTANTE con
       // esqueletos; las páginas llegan por el temporizador en
-      // segundo plano.
-      return { state: { detail: detailLoadingDe(slug) },
+      // segundo plano. La fuente del cómic: la guardada con la
+      // tarjeta/favorito/historial; si no, la activa.
+      const siteId = (CARDINFO[slug] && CARDINFO[slug].s) ||
+        (progress()[slug] && progress()[slug].s) ||
+        (favs().find((f) => f.slug === slug) || {}).s || siteDe(state).id;
+      return { state: { detail: detailLoadingDe(slug, { fuente: siteId }) },
                route: { push: "detail", params: { slug: slug } } };
     }
   } catch (e) {

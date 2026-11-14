@@ -1,31 +1,26 @@
 {
-  "id": "chochox",
-  "name": "ChoChoX",
+  "id": "comictrack",
+  "name": "ComicTrack",
   "author": "Hotaru Yume",
   "creator": "hotaruyume",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "apiVersion": 14,
   "entry": "plugin.js",
   "icon": "icon.png",
   "hosts": [
-    "chochox.com"
+    "vermangasporno.com",
+    "www.vermangasporno.com",
+    "kingcomix.com",
+    "www.kingcomix.com"
   ],
-  "capabilities": [
-    "screen",
-    "shared"
-  ],
-  "categories": [
-    "adult"
-  ],
+  "capabilities": ["screen", "shared"],
+  "categories": ["adult"],
   "screen": {
-    "label": "ChoChoX",
-    "labelEn": "ChoChoX",
-    "iconFile": "icon.png",
+    "label": "ComicTrack",
+    "labelEn": "ComicTrack",
     "menuOpens": "screen",
-    "opensFrom": [
-      "menu",
-      "settings"
-    ],
+    "opensFrom": ["menu", "settings"],
+    "icon": "menu_book",
     "adult": true
   }
 }
