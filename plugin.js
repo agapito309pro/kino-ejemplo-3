@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.3.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.3.1 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -44,7 +44,7 @@
 //     temporizador sin ticks apilados).
 
 const UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36";
-const PER_PAGE = 12; // cómics por página de listado (respuestas livianas)
+const PER_PAGE = 18; // cómics por página de listado
 const LIB_MAX = 144; // tope de cómics acumulados en la Biblioteca (estado pequeño)
 const PAGES_MAX = 300; // tope de páginas por cómic (límite de nodos de Kino)
 const MEDIA_PER = 100; // adjuntos por petición (tope REST de WordPress)
@@ -224,7 +224,7 @@ async function getCards(site, page, q, sec) {
     if (sec && sec.tax && sec.id != null) {
       path = "/posts?" + sec.tax + "=" + sec.id + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
     } else if (q) {
-      path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+      path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + Math.max(PER_PAGE, 24) + "&page=" + p + "&_embed&orderby=relevance";
     } else if (!sec) {
       path = "/posts?per_page=" + PER_PAGE + "&page=" + p + "&_embed";
     } else {
@@ -265,9 +265,8 @@ function decode(s) {
 // Primera imagen del contenido (la portada: la página 1 del cómic).
 // Genérica: cualquier galería de WordPress (/wp-content/uploads/).
 function firstImg(content) {
-  const m = String(content || "").match(
-    /src="?(https?:\/\/[^"\s]*?\/wp-content\/uploads\/[^"\s]+?\.(?:webp|jpe?g|png|gif))/);
-  return m ? m[1] : "";
+  const imgs = readerImages(content);
+  return imgs.length ? imgs[0].url : "";
 }
 
 // Entradas del REST → tarjetas. Portada: la imagen destacada
@@ -363,15 +362,23 @@ async function getJsonUrl(site, path, timeoutMs) {
 function readerImages(content) {
   const html = String(content || "");
   const out = [], seen = {};
-  const re = /src="?(https?:\/\/[^"\s]*?\/wp-content\/uploads\/[^"\s]+?\.(?:webp|jpe?g|png|gif))"/g;
+  // Cualquier imagen http(s): wp-content, CDN (fullcomics18, himg.nl, etc.)
+  const re = /(?:src|data-src|data-lazy-src|data-full|data-original)="?(https?:\/\/[^"\s>]+\.(?:webp|jpe?g|png|gif)(?:\?[^"\s>]*)?)"?/gi;
   let m;
   while ((m = re.exec(html)) !== null) {
-    if (seen[m[1]]) continue;
-    seen[m[1]] = true;
+    const u = m[1];
+    if (seen[u]) continue;
+    // filtrar logos, banners, avatares, emojis, thumbs minúsculos de UI
+    if (/(?:^|[^a-z])(?:logo|icon|avatar|emoji|badge|button|flag|sprite|smiley|banner|favicon|placeholder|spinner)(?:[^a-z]|$)|\/(?:ads?|banners?)\b|wp-includes|gravatar|loading\.gif/i.test(u)) continue;
+    // thumbs de listado muy pequeños típicos de sidebar
+    if (/-\d{2,3}x\d{2,3}\.(?:webp|jpe?g|png)/i.test(u) && !/uploads/i.test(u)) continue;
+    seen[u] = true;
     const win = html.slice(Math.max(0, m.index - 300), m.index + m[0].length + 300);
     const w = parseInt((win.match(/\bwidth="(\d+)"/) || [])[1], 10) || 0;
     const h = parseInt((win.match(/\bheight="(\d+)"/) || [])[1], 10) || 0;
-    out.push({ url: m[1], w: w, h: h });
+    // descartar imágenes minúsculas de UI si traen width/height
+    if (w > 0 && h > 0 && w < 120 && h < 120) continue;
+    out.push({ url: u, w: w, h: h });
   }
   return out;
 }
@@ -432,10 +439,17 @@ async function loadSeries(site, slug, force) {
         overview: decode(p.excerpt && p.excerpt.rendered ? p.excerpt.rendered : "").slice(0, 600),
         adult: true,
       };
-      let fromMedia = [], fromContent = readerImages(content).map((x) => x.url || x);
-      try { fromMedia = await mediaPages(site, p.id); } catch (e) { kino.log("media", e.message); }
-      pages = fromMedia.length >= fromContent.length ? fromMedia : fromContent;
-      if (!pages.length) pages = fromMedia.length ? fromMedia : fromContent;
+      const fromContent = readerImages(content).map((x) => x.url || x);
+      let fromMedia = [];
+      // Solo pedir media si el contenido trae pocas páginas reales.
+      // En Comics18/VCPxxx el parent media suele ser adjuntos ajenos (ads).
+      if (fromContent.length < 5) {
+        try { fromMedia = await mediaPages(site, p.id); } catch (e) { kino.log("media", e.message); }
+      }
+      // Preferir siempre el contenido si tiene una secuencia razonable
+      if (fromContent.length >= 5) pages = fromContent;
+      else if (fromMedia.length > fromContent.length) pages = fromMedia;
+      else pages = fromContent.length ? fromContent : fromMedia;
       if (!meta.poster && pages.length) meta.poster = pages[0];
     }
   } catch (e) { kino.log("rest", e.message); }
@@ -746,18 +760,25 @@ function historyList(state) {
 
 // Tope de cómics por sección en el estado (que viaja en la pantalla):
 // 12 al abrir + hasta 48 más con «Ver más».
-const GENERO_MAX = 48;
+const GENERO_MAX = 72;
 
 // Selector de fuente (patrón de pestañas de MangaTrack): chips de
 // selección única de Kino — la fuente activa queda resaltada y se
 // cambia con un toque.
 function chipsRow(state) {
+  // Fila deslizable compacta: una sola línea horizontal, sin apilar
+  // chips a pantalla completa. Ocupa poco espacio vertical.
   return {
-    type: "Chips", key: "fuente", padding: 12,
-    labelText: "Fuente", labelTextEn: "Source",
-    options: SITES.map((s) => ({ value: s.id, label: s.name, labelEn: s.name })),
-    value: siteDe(state).id,
-    onChanged: { event: "fuenteSel" },
+    type: "SingleChildScrollView",
+    key: "fuenteScroll",
+    direction: "horizontal",
+    padding: 8,
+    children: [{
+      type: "Chips", key: "fuente",
+      options: SITES.map((s) => ({ value: s.id, label: s.name, labelEn: s.name })),
+      value: siteDe(state).id,
+      onChanged: { event: "fuenteSel" },
+    }],
   };
 }
 
