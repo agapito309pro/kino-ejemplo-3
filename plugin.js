@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.1.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.2.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -53,22 +53,50 @@ const MEDIA_PER = 100; // adjuntos por petición (tope REST de WordPress)
 // «cardRe»: expresión para el respaldo HTML (grupo 1 = URL, 2 = slug).
 const SITES = [
   {
-    id: "dh", name: "DoujinHentai", base: "https://doujinhentai.net",
-    kind: "dh", comicPath: "/manga/", cardRe: "",
+    id: "cpa", name: "ComicsParaAdultos", base: "https://comicsparaadultos.com",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/comicsparaadultos\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
     sections: [
-      { key: "dhL", path: "/manga?order=latest", label: "Recientes", labelEn: "Latest" },
-      { key: "dhP", path: "/manga?order=popular", label: "Populares", labelEn: "Popular" },
-      { key: "dhHot", path: "/", label: "Destacados", labelEn: "Featured" },
+      { key: "cpa16", tax: "categories", id: 16, label: "Comics 3D", labelEn: "3D Comics" },
+      { key: "cpa10", tax: "categories", id: 10, label: "Incesto", labelEn: "Incest" },
+      { key: "cpa34", tax: "categories", id: 34, label: "Caricaturas", labelEn: "Cartoons" },
+      { key: "cpa55", tax: "categories", id: 55, label: "Interracial", labelEn: "Interracial" },
+      { key: "cpa1", tax: "categories", id: 16, label: "Novedades", labelEn: "Latest" },
     ],
   },
   {
-    id: "vmp", name: "VerMangasPorno", base: "https://vermangasporno.com",
+    id: "rey", name: "ReyComix", base: "https://reycomix.com",
     comicPath: "",
-    cardRe: 'href="(https:\\/\\/vermangasporno\\.com\\/doujins\\/([a-z0-9][a-z0-9-]{3,})\\/?)"',
+    cardRe: 'href="(https:\\/\\/reycomix\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
     sections: [
-      { key: "v1", tax: "categories", id: 1, label: "Manga Hentai", labelEn: "Hentai Manga" },
-      { key: "v4", tax: "categories", id: 4, label: "Sin Censura", labelEn: "Uncensored" },
-      { key: "v3", tax: "categories", id: 3, label: "Full Color", labelEn: "Full Color" },
+      { key: "r7", tax: "categories", id: 7, label: "Comics Porno", labelEn: "Porn Comics" },
+      { key: "r58", tax: "categories", id: 58, label: "Hentai", labelEn: "Hentai" },
+      { key: "r44", tax: "categories", id: 44, label: "Anime XXX", labelEn: "Anime XXX" },
+      { key: "r60", tax: "categories", id: 60, label: "Pokemon", labelEn: "Pokemon" },
+      { key: "r90", tax: "categories", id: 90, label: "Interracial", labelEn: "Interracial" },
+    ],
+  },
+  {
+    id: "mela", name: "MelaPelaComics", base: "https://melapelacomics.com",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/melapelacomics\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    sections: [
+      { key: "m1461", tax: "categories", id: 1461, label: "Cartoons", labelEn: "Cartoons" },
+      { key: "m5", tax: "categories", id: 5, label: "Incesto", labelEn: "Incest" },
+      { key: "m6", tax: "categories", id: 6, label: "Comics 3D", labelEn: "3D Comics" },
+      { key: "m3", tax: "categories", id: 3, label: "Hentai", labelEn: "Hentai" },
+      { key: "m2", tax: "categories", id: 2, label: "Interraciales", labelEn: "Interracial" },
+    ],
+  },
+  {
+    id: "vcp", name: "VerComicsPorno", base: "https://vercomicsporno.com",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/vercomicsporno\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    sections: [
+      { key: "v3125", tax: "categories", id: 3125, label: "Comics Porno", labelEn: "Porn Comics" },
+      { key: "v7", tax: "categories", id: 7, label: "Comics 3D", labelEn: "3D Comics" },
+      { key: "v247", tax: "categories", id: 247, label: "Mangas Hentai", labelEn: "Hentai Manga" },
+      { key: "v105", tax: "categories", id: 105, label: "Palcomix", labelEn: "Palcomix" },
     ],
   },
   {
@@ -175,14 +203,6 @@ async function getHtml(site, path, timeoutMs) {
 // no trae nada, el HTML de la página correspondiente. Devuelve SIEMPRE
 // una lista o lanza «network» (para que la pantalla muestre el error).
 async function getCards(site, page, q, sec) {
-  if (site.kind === "dh") {
-    const pt = parseInt(page, 10) || 1;
-    let ruta;
-    if (q) ruta = "/manga?search=" + encodeURIComponent(q) + (pt > 1 ? "&page=" + pt : "");
-    else if (sec && sec.path) ruta = sec.path + (sec.path.indexOf("?") >= 0 ? "&" : "?") + "page=" + pt;
-    else ruta = "/manga?page=" + pt;
-    return dhCards(await getHtml(site, ruta, 20000), 40, site);
-  }
   const p = parseInt(page, 10) || 1;
   // 1) REST (con _embed: trae la portada destacada de cada cómic)
   try {
@@ -264,6 +284,9 @@ function postsToCards(arr, site) {
 
 // rutas de una sola pieza que NO son cómics (menú, paginación, legales…)
 const NO_SERIE = {
+  "comics-exclusivos": true, favoritos: true, "comics-random": true,
+  etiquetas: true, login: true, register: true, "sex-comics": true,
+  "lista-de-artistas": true, "aviso-legal": true,
   porno: true, page: true, feed: true, comments: true, search: true,
   tag: true, category: true, author: true, autor: true,
   "wp-json": true, "wp-content": true, "wp-admin": true, "wp-login": true,
@@ -369,102 +392,8 @@ function pageNodes(p, i, pre) {
 // guarda en kino.storage («serie:<slug>»); del estado de la pantalla
 // solo viaja el meta.
 
-// Tarjetas DoujinHentai: enlaces /manga/<slug>
-function dhCards(html, max, site) {
-  const out = [], seen = {};
-  const re = /(?:href|data-href)="((?:https?:\/\/[^"\/]+)?\/manga\/([a-z0-9][a-z0-9-]{2,}))"/g;
-  let m;
-  while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
-    const path = m[1], slug = m[2];
-    if (seen[slug] || slug === "page") continue;
-    seen[slug] = true;
-    const win = html.slice(m.index, Math.min(html.length, m.index + 2800));
-    const t = win.match(/line-clamp-2[^>]*>\s*([^<]{2,180})</)
-      || win.match(/class="[^"]*title[^"]*"[^>]*>\s*([^<]{2,180})</)
-      || win.match(/<h[23][^>]*>\s*([^<]{2,180})</);
-    const im = win.match(/<img[^>]+(?:data-src|data-original|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"]*)?)"/);
-    out.push({
-      slug: slug,
-      url: /^https?:/.test(path) ? path : (site.base + path),
-      title: t ? decode(t[1]) : slug.replace(/-/g, " "),
-      poster: im ? im[1] : "",
-      adult: true,
-    });
-  }
-  if (!out.length) {
-    const re2 = /\/manga\/([a-z0-9][a-z0-9-]{3,})/g;
-    while ((m = re2.exec(html)) !== null && out.length < (max || 40)) {
-      const slug = m[1];
-      if (seen[slug] || slug === "page") continue;
-      seen[slug] = true;
-      out.push({ slug: slug, url: site.base + "/manga/" + slug, title: slug.replace(/-/g, " "), poster: "", adult: true });
-    }
-  }
-  return out;
-}
-
-// DoujinHentai: detalle /manga/<slug> y páginas de imágenes
-async function loadSeriesDh(site, slug, force) {
-  if (!slug || !/^[a-z0-9][a-z0-9-]{2,}$/i.test(slug)) throw kino.error("arguments", "slug");
-  const info = CARDINFO[slug] || {};
-  const prog = progress()[slug] || {};
-  const fav = favs().find((f) => f.slug === slug) || {};
-  const paths = ["/manga/" + slug, "/manga/" + slug + "/read", "/manga/" + slug + "/leer", "/manga/" + slug + "/1"];
-  let pages = [];
-  let meta = {
-    title: info.title || prog.title || fav.title || slug.replace(/-/g, " "),
-    poster: info.poster || prog.poster || fav.poster || "",
-    overview: "",
-    adult: true,
-  };
-  for (const path of paths) {
-    try {
-      const html = await getHtml(site, path, 22000);
-      if (!html || html.length < 500) continue;
-      const pick = (re) => { const m = html.match(re); return m ? decode(m[1]) : ""; };
-      meta.title = pick(/property="og:title"[^>]*content="([^"]+)"/) || pick(/<h1[^>]*>\s*([^<]{2,200})</) || meta.title;
-      meta.poster = pick(/property="og:image"[^>]*content="([^"]+)"/) || meta.poster;
-      meta.overview = (pick(/property="og:description"[^>]*content="([^"]+)"/) || "").slice(0, 600);
-      const out = [], seen = {};
-      const re = /(?:data-src|data-original|data-lazy-src|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
-      let m;
-      while ((m = re.exec(html)) !== null) {
-        const u = m[1];
-        if (seen[u] || /(logo|icon|avatar|emoji|badge|button|flag|sprite)/i.test(u)) continue;
-        seen[u] = true;
-        out.push(u);
-        if (out.length >= PAGES_MAX) break;
-      }
-      if (out.length >= 2) { pages = out; break; }
-      const rd = html.match(/href="([^"]*(?:\/read|\/leer|\/reader|\/capitulo)[^"#]*)"/i);
-      if (rd && path.indexOf("/read") < 0) {
-        const rp = rd[1].indexOf("://") >= 0 ? rd[1].replace(site.base, "") : rd[1];
-        try {
-          const rhtml = await getHtml(site, rp, 25000);
-          const out2 = [], seen2 = {};
-          const re2 = /(?:data-src|data-original|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
-          let m2;
-          while ((m2 = re2.exec(rhtml)) !== null) {
-            if (seen2[m2[1]] || /(logo|icon|avatar)/i.test(m2[1])) continue;
-            seen2[m2[1]] = true;
-            out2.push(m2[1]);
-            if (out2.length >= PAGES_MAX) break;
-          }
-          if (out2.length >= 2) { pages = out2; break; }
-        } catch (e2) { kino.log("dhreader", e2.message); }
-      }
-    } catch (e) { kino.log("dhdetail", path + " " + e.message); }
-  }
-  if (!pages.length) throw kino.error("network", "sin-paginas", {
-    userMessage: "No se pudieron cargar las páginas. Prueba otra fuente o más tarde.",
-  });
-  if (!meta.poster) meta.poster = pages[0];
-  return { slug: slug, meta: meta, pages: pages };
-}
-
 async function loadSeries(site, slug, force) {
-  if (site.kind === "dh") return loadSeriesDh(site, slug, force);
-  if (!slugValido(slug)) throw kino.error("arguments", "slug");
+    if (!slugValido(slug)) throw kino.error("arguments", "slug");
   const ck = "serie:" + site.id + ":" + slug;
   if (!force) {
     try {
