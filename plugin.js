@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.2.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.3.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -53,15 +53,39 @@ const MEDIA_PER = 100; // adjuntos por petición (tope REST de WordPress)
 // «cardRe»: expresión para el respaldo HTML (grupo 1 = URL, 2 = slug).
 const SITES = [
   {
-    id: "cpa", name: "ComicsParaAdultos", base: "https://comicsparaadultos.com",
+    id: "cpx", name: "ComicsPorno", base: "https://comicsporno.xxx",
     comicPath: "",
-    cardRe: 'href="(https:\\/\\/comicsparaadultos\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    cardRe: 'href="(https:\\/\\/comicsporno\\.xxx\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
     sections: [
-      { key: "cpa16", tax: "categories", id: 16, label: "Comics 3D", labelEn: "3D Comics" },
-      { key: "cpa10", tax: "categories", id: 10, label: "Incesto", labelEn: "Incest" },
-      { key: "cpa34", tax: "categories", id: 34, label: "Caricaturas", labelEn: "Cartoons" },
-      { key: "cpa55", tax: "categories", id: 55, label: "Interracial", labelEn: "Interracial" },
-      { key: "cpa1", tax: "categories", id: 16, label: "Novedades", labelEn: "Latest" },
+      { key: "cpx85", tax: "categories", id: 85, label: "Komik Hentai", labelEn: "Hentai" },
+      { key: "cpx821", tax: "categories", id: 821, label: "Porno Anime", labelEn: "Anime XXX" },
+      { key: "cpx1", tax: "categories", id: 1, label: "Comics Porno", labelEn: "Porn Comics" },
+      { key: "cpx10", tax: "categories", id: 10, label: "Milftoon", labelEn: "Milftoon" },
+      { key: "cpx6", tax: "categories", id: 6, label: "Incesto", labelEn: "Incest" },
+    ],
+  },
+  {
+    id: "c18", name: "Comics18", base: "https://comics18.org",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/comics18\\.org\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    sections: [
+      { key: "c18136", tax: "categories", id: 136, label: "Manga Hentai", labelEn: "Hentai Manga" },
+      { key: "c181281", tax: "categories", id: 1281, label: "CrazyDad3D", labelEn: "CrazyDad3D" },
+      { key: "c1819", tax: "categories", id: 19, label: "Palcomix", labelEn: "Palcomix" },
+      { key: "c1838", tax: "categories", id: 38, label: "Y3DF", labelEn: "Y3DF" },
+      { key: "c182281", tax: "categories", id: 2281, label: "Pig King", labelEn: "Pig King" },
+    ],
+  },
+  {
+    id: "vcx", name: "VerComicsPorno.xxx", base: "https://vercomicsporno.xxx",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/vercomicsporno\\.xxx\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    sections: [
+      { key: "vcx46", tax: "categories", id: 46, label: "Porno Anime", labelEn: "Anime XXX" },
+      { key: "vcx314", tax: "categories", id: 314, label: "Furry Hentai", labelEn: "Furry Hentai" },
+      { key: "vcx10", tax: "categories", id: 10, label: "Comics Porno", labelEn: "Porn Comics" },
+      { key: "vcx6", tax: "categories", id: 6, label: "Milftoon", labelEn: "Milftoon" },
+      { key: "vcx32", tax: "categories", id: 32, label: "Incesto", labelEn: "Incest" },
     ],
   },
   {
@@ -69,11 +93,13 @@ const SITES = [
     comicPath: "",
     cardRe: 'href="(https:\\/\\/reycomix\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
     sections: [
-      { key: "r7", tax: "categories", id: 7, label: "Comics Porno", labelEn: "Porn Comics" },
       { key: "r58", tax: "categories", id: 58, label: "Hentai", labelEn: "Hentai" },
+      { key: "rTagSC", tax: "tags", id: 457, label: "Sin Censura", labelEn: "Uncensored" },
+      { key: "r16", tax: "tags", id: 16, label: "Full Color", labelEn: "Full Color" },
+      { key: "r57", tax: "tags", id: 57, label: "Comics 3D", labelEn: "3D Comics" },
+      { key: "r7", tax: "categories", id: 7, label: "Comics Porno", labelEn: "Porn Comics" },
       { key: "r44", tax: "categories", id: 44, label: "Anime XXX", labelEn: "Anime XXX" },
       { key: "r60", tax: "categories", id: 60, label: "Pokemon", labelEn: "Pokemon" },
-      { key: "r90", tax: "categories", id: 90, label: "Interracial", labelEn: "Interracial" },
     ],
   },
   {
@@ -81,36 +107,24 @@ const SITES = [
     comicPath: "",
     cardRe: 'href="(https:\\/\\/melapelacomics\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
     sections: [
+      { key: "m3", tax: "categories", id: 3, label: "Hentai", labelEn: "Hentai" },
+      { key: "mTagSC", tax: "tags", id: 1537, label: "Sin Censura", labelEn: "Uncensored" },
+      { key: "m6", tax: "categories", id: 6, label: "Comics 3D", labelEn: "3D Comics" },
       { key: "m1461", tax: "categories", id: 1461, label: "Cartoons", labelEn: "Cartoons" },
       { key: "m5", tax: "categories", id: 5, label: "Incesto", labelEn: "Incest" },
-      { key: "m6", tax: "categories", id: 6, label: "Comics 3D", labelEn: "3D Comics" },
-      { key: "m3", tax: "categories", id: 3, label: "Hentai", labelEn: "Hentai" },
       { key: "m2", tax: "categories", id: 2, label: "Interraciales", labelEn: "Interracial" },
     ],
   },
   {
-    id: "vcp", name: "VerComicsPorno", base: "https://vercomicsporno.com",
+    id: "cpa", name: "ComicsParaAdultos", base: "https://comicsparaadultos.com",
     comicPath: "",
-    cardRe: 'href="(https:\\/\\/vercomicsporno\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    cardRe: 'href="(https:\\/\\/comicsparaadultos\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
     sections: [
-      { key: "v3125", tax: "categories", id: 3125, label: "Comics Porno", labelEn: "Porn Comics" },
-      { key: "v7", tax: "categories", id: 7, label: "Comics 3D", labelEn: "3D Comics" },
-      { key: "v247", tax: "categories", id: 247, label: "Mangas Hentai", labelEn: "Hentai Manga" },
-      { key: "v105", tax: "categories", id: 105, label: "Palcomix", labelEn: "Palcomix" },
-    ],
-  },
-  {
-    id: "kc", name: "KingComix", base: "https://kingcomix.com",
-    comicPath: "",
-    cardRe: 'href="(https:\\/\\/kingcomix\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/)"',
-    sections: [
-      { key: "k1c", tax: "categories", id: 1, label: "Novedades", labelEn: "Latest" },
-      { key: "k12c", tax: "categories", id: 12, label: "Furry", labelEn: "Furry" },
-      { key: "k3c", tax: "categories", id: 3, label: "Hentai Manga", labelEn: "Hentai Manga" },
-      { key: "k46c", tax: "categories", id: 46, label: "Dragon Ball", labelEn: "Dragon Ball" },
-      { key: "k229c", tax: "categories", id: 229, label: "Pokemon", labelEn: "Pokemon" },
-      { key: "k169c", tax: "categories", id: 169, label: "Naruto", labelEn: "Naruto" },
-      { key: "k244c", tax: "categories", id: 244, label: "My Hero Academia", labelEn: "My Hero Academia" },
+      { key: "cpa16", tax: "categories", id: 16, label: "Comics 3D", labelEn: "3D Comics" },
+      { key: "cpa17", tax: "categories", id: 17, label: "Mangas", labelEn: "Manga" },
+      { key: "cpa10", tax: "categories", id: 10, label: "Incesto", labelEn: "Incest" },
+      { key: "cpa34", tax: "categories", id: 34, label: "Caricaturas", labelEn: "Cartoons" },
+      { key: "cpa55", tax: "categories", id: 55, label: "Interracial", labelEn: "Interracial" },
     ],
   },
 ];
@@ -418,8 +432,10 @@ async function loadSeries(site, slug, force) {
         overview: decode(p.excerpt && p.excerpt.rendered ? p.excerpt.rendered : "").slice(0, 600),
         adult: true,
       };
-      try { pages = await mediaPages(site, p.id); } catch (e) { kino.log("media", e.message); }
-      if (!pages.length) pages = readerImages(content).map((x) => x.url);
+      let fromMedia = [], fromContent = readerImages(content).map((x) => x.url || x);
+      try { fromMedia = await mediaPages(site, p.id); } catch (e) { kino.log("media", e.message); }
+      pages = fromMedia.length >= fromContent.length ? fromMedia : fromContent;
+      if (!pages.length) pages = fromMedia.length ? fromMedia : fromContent;
       if (!meta.poster && pages.length) meta.poster = pages[0];
     }
   } catch (e) { kino.log("rest", e.message); }
