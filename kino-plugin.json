@@ -1,21 +1,19 @@
 {
-  "id": "comictrack",
-  "name": "ComicTrack",
+  "id": "lectura18",
+  "name": "Lectura +18",
   "author": "Hotaru Yume",
   "creator": "hotaruyume",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "apiVersion": 14,
   "entry": "plugin.js",
   "icon": "icon.png",
   "hosts": [
+    "doujinhentai.net",
+    "www.doujinhentai.net",
+    "vermangasporno.com",
+    "www.vermangasporno.com",
     "kingcomix.com",
-    "www.kingcomix.com",
-    "hmanga.asia",
-    "www.hmanga.asia",
-    "tmohentai.app",
-    "www.tmohentai.app",
-    "storage.tmohentai.app",
-    "image.tmohentai.app"
+    "www.kingcomix.com"
   ],
   "capabilities": [
     "screen",
@@ -25,8 +23,8 @@
     "adult"
   ],
   "screen": {
-    "label": "ComicTrack",
-    "labelEn": "ComicTrack",
+    "label": "Lectura +18",
+    "labelEn": "Lectura +18",
     "menuOpens": "screen",
     "opensFrom": [
       "menu",

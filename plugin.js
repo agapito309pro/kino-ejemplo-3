@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.0.3 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.1.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -53,6 +53,25 @@ const MEDIA_PER = 100; // adjuntos por petición (tope REST de WordPress)
 // «cardRe»: expresión para el respaldo HTML (grupo 1 = URL, 2 = slug).
 const SITES = [
   {
+    id: "dh", name: "DoujinHentai", base: "https://doujinhentai.net",
+    kind: "dh", comicPath: "/manga/", cardRe: "",
+    sections: [
+      { key: "dhL", path: "/manga?order=latest", label: "Recientes", labelEn: "Latest" },
+      { key: "dhP", path: "/manga?order=popular", label: "Populares", labelEn: "Popular" },
+      { key: "dhHot", path: "/", label: "Destacados", labelEn: "Featured" },
+    ],
+  },
+  {
+    id: "vmp", name: "VerMangasPorno", base: "https://vermangasporno.com",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/vermangasporno\\.com\\/doujins\\/([a-z0-9][a-z0-9-]{3,})\\/?)"',
+    sections: [
+      { key: "v1", tax: "categories", id: 1, label: "Manga Hentai", labelEn: "Hentai Manga" },
+      { key: "v4", tax: "categories", id: 4, label: "Sin Censura", labelEn: "Uncensored" },
+      { key: "v3", tax: "categories", id: 3, label: "Full Color", labelEn: "Full Color" },
+    ],
+  },
+  {
     id: "kc", name: "KingComix", base: "https://kingcomix.com",
     comicPath: "",
     cardRe: 'href="(https:\\/\\/kingcomix\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/)"',
@@ -64,27 +83,6 @@ const SITES = [
       { key: "k229c", tax: "categories", id: 229, label: "Pokemon", labelEn: "Pokemon" },
       { key: "k169c", tax: "categories", id: 169, label: "Naruto", labelEn: "Naruto" },
       { key: "k244c", tax: "categories", id: 244, label: "My Hero Academia", labelEn: "My Hero Academia" },
-    ],
-  },
-  {
-    id: "hm", name: "HManga", base: "https://hmanga.asia",
-    comicPath: "",
-    cardRe: 'href="(https?:\\/\\/(?:www\\.)?hmanga\\.asia\\/([a-z0-9][a-z0-9-]{3,})\\/?)"',
-    sections: [
-      { key: "hm1", tax: "categories", id: 1, label: "Novedades", labelEn: "Latest" },
-      { key: "hmTag1", pathHtml: "/tags/sin-censura/", label: "Sin censura", labelEn: "Uncensored" },
-      { key: "hmTag2", pathHtml: "/tags/full-color/", label: "Full Color", labelEn: "Full Color" },
-    ],
-  },
-  {
-    id: "tmo", name: "TMOHentai", base: "https://tmohentai.app",
-    kind: "tmo", comicPath: "", cardRe: "",
-    sections: [
-      { key: "tPop", path: "/biblioteca?order_item=likes_count&order_dir=desc", label: "Populares", labelEn: "Popular" },
-      { key: "tLatest", path: "/biblioteca?order_item=creation&order_dir=desc", label: "Recientes", labelEn: "Latest" },
-      { key: "tDou", path: "/biblioteca?type=doujinshi", label: "Doujinshi", labelEn: "Doujinshi" },
-      { key: "tManga", path: "/biblioteca?type=manga", label: "Manga", labelEn: "Manga" },
-      { key: "tHentai", path: "/biblioteca?type=hentai", label: "Hentai", labelEn: "Hentai" },
     ],
   },
 ];
@@ -177,12 +175,13 @@ async function getHtml(site, path, timeoutMs) {
 // no trae nada, el HTML de la página correspondiente. Devuelve SIEMPRE
 // una lista o lanza «network» (para que la pantalla muestre el error).
 async function getCards(site, page, q, sec) {
-  if (site.kind === "tmo") {
+  if (site.kind === "dh") {
     const pt = parseInt(page, 10) || 1;
-    const ruta = q ? "/biblioteca?title=" + encodeURIComponent(q) + (pt > 1 ? "&page=" + pt : "")
-      : sec ? sec.path + (sec.path.indexOf("?") >= 0 ? "&" : "?") + "page=" + pt
-      : "/biblioteca?page=" + pt;
-    return tmoCards(await getHtml(site, ruta, 20000), 40, site);
+    let ruta;
+    if (q) ruta = "/manga?search=" + encodeURIComponent(q) + (pt > 1 ? "&page=" + pt : "");
+    else if (sec && sec.path) ruta = sec.path + (sec.path.indexOf("?") >= 0 ? "&" : "?") + "page=" + pt;
+    else ruta = "/manga?page=" + pt;
+    return dhCards(await getHtml(site, ruta, 20000), 40, site);
   }
   const p = parseInt(page, 10) || 1;
   // 1) REST (con _embed: trae la portada destacada de cada cómic)
@@ -318,166 +317,9 @@ async function getJsonUrl(site, path, timeoutMs) {
 
 // Tarjetas desde el HTML de TMOHentai (/comics): enlaces
 // «/library/<tipo>/<id>/<slug>» con su título y portada cercana.
-function tmoCards(html, max, site) {
-  const out = [], seen = {};
-  // /library/<tipo>/<id>/<slug>  o  /library/<id>/<slug>
-  const re = /href="((?:https?:\/\/[^"\/]+)?\/library\/(?:[a-z0-9-]+\/)?(\d+)\/[a-z0-9-]+[^"]*)"/g;
-  let m;
-  while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
-    const path = m[1], id = m[2];
-    if (seen[id]) continue;
-    seen[id] = true;
-    const win = html.slice(m.index, Math.min(html.length, m.index + 3500));
-    const t = win.match(/manga-card__title[^>]*>\s*([^<]{1,200})</)
-      || win.match(/class="[^"]*title[^"]*"[^>]*>\s*([^<]{1,200})</)
-      || win.match(/<h[23][^>]*>\s*([^<]{1,200})</);
-    const im = win.match(/<img[^>]+(?:data-src|data-original|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"]*)?)"/);
-    out.push({
-      slug: id,
-      url: /^https?:/.test(path) ? path : (site.base + (path.startsWith("/") ? path : "/" + path)),
-      title: t ? decode(t[1]) : ("Cómic " + id),
-      poster: im ? im[1] : "",
-      adult: true,
-    });
-  }
-  return out;
-}
 
-// Cómics de TMOHentai (sitio propio, no WordPress). Páginas: primero
-// la API JSON del lector (imágenes servidas por el proxy propio del
-// sitio, storage.tmohentai.app); si falla, el HTML de la página del
-// lector (/view_uploads/…). Título/portada/sinopsis: del HTML del
-// detalle; si no hay URL guardada, de la tarjeta/historial.
-async function loadSeriesTmo(site, slug, force) {
-  const id = String(parseInt(slug, 10) || 0);
-  if (!id || id === "0") throw kino.error("arguments", "id");
-  const info = CARDINFO[slug] || {};
-  const prog = progress()[slug] || {};
-  const fav = favs().find((f) => f.slug === slug) || {};
-  let urlComic = info.u || prog.url || fav.u || "";
-  // Si no tenemos URL de detalle, construimos candidatos habituales
-  const detailCandidates = [];
-  if (urlComic) {
-    detailCandidates.push(urlComic.indexOf("://") >= 0 ? urlComic.replace(site.base, "") : urlComic);
-  }
-  detailCandidates.push(
-    "/library/comic/" + id,
-    "/library/manga/" + id,
-    "/library/doujinshi/" + id,
-    "/library/hentai/" + id,
-    "/library/" + id
-  );
-  let pages = [];
-  let metaHtml = null;
 
-  // 1) API JSON del lector (varios endpoints posibles)
-  const apiPaths = [
-    "/api/manga/" + id + "/preview-pages",
-    "/api/v1/manga/" + id + "/pages",
-    "/api/manga/" + id + "/pages",
-  ];
-  for (const ap of apiPaths) {
-    if (pages.length) break;
-    try {
-      const data = await getJsonUrl(site, ap, 18000);
-      const arr = (data && (data.pages || data.data || data.images)) || [];
-      if (Array.isArray(arr) && arr.length) {
-        pages = arr.map((x, i) => {
-          if (typeof x === "string") return { n: i, url: x };
-          return {
-            n: x.page_number != null ? x.page_number : (x.page != null ? x.page : i),
-            url: x.proxied_url || x.url || x.src || x.image || "",
-          };
-        }).filter((x) => x.url)
-          .sort((a, b) => a.n - b.n)
-          .map((x) => x.url).slice(0, PAGES_MAX);
-      }
-    } catch (e) { kino.log("tmoapi", ap + " " + e.message); }
-  }
 
-  // 2) HTML del detalle + lector
-  for (const cand of detailCandidates) {
-    if (metaHtml && pages.length) break;
-    try {
-      const det = await getHtml(site, cand, 20000);
-      if (!det || det.length < 400) continue;
-      const pick = (re) => { const m = det.match(re); return m ? decode(m[1]) : ""; };
-      if (!metaHtml) {
-        metaHtml = {
-          title: pick(/id="md-title"[^>]*>\s*([^<]{1,200})</)
-            || pick(/property="og:title"[^>]*content="([^"]+)"/)
-            || pick(/<h1[^>]*>\s*([^<]{1,200})</) || "",
-          poster: pick(/id="md-cover"[^>]+src="([^"]+)"/)
-            || pick(/property="og:image"[^>]*content="([^"]+)"/) || "",
-          overview: pick(/synopsis[\s\S]{0,400}?<p[^>]*>([^<]{1,600})</)
-            || pick(/property="og:description"[^>]*content="([^"]+)"/) || "",
-        };
-      }
-      if (!pages.length) {
-        // enlace al lector
-        const rd = det.match(/href="([^"]*(?:\/view_uploads\/|\/reader\/|\/read\/)[^"#]*)"/i)
-          || det.match(/href="([^"]*\/library\/[^"]+\/read[^"#]*)"/i);
-        const readerPaths = [];
-        if (rd) {
-          const rp = rd[1].indexOf("://") >= 0 ? rd[1].replace(site.base, "") : rd[1];
-          readerPaths.push(rp);
-        }
-        // candidatos directos por id
-        readerPaths.push(
-          "/view_uploads/" + id,
-          "/reader/" + id,
-          "/library/comic/" + id + "/read",
-          cand.replace(/\/?$/, "") + "/read"
-        );
-        for (const rp of readerPaths) {
-          if (pages.length) break;
-          try {
-            const rhtml = await getHtml(site, rp, 25000);
-            const zona = rhtml.indexOf("reader-wrap") >= 0
-              ? rhtml.slice(rhtml.indexOf("reader-wrap"))
-              : (rhtml.indexOf("reader") >= 0 ? rhtml.slice(rhtml.indexOf("reader")) : rhtml);
-            const out = [], seen = {};
-            const re = /(?:data-src|data-original|data-lazy-src|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
-            let m;
-            while ((m = re.exec(zona)) !== null) {
-              if (seen[m[1]]) continue;
-              // filtrar logos / iconos pequeños
-              if (/\/(logo|icon|avatar|emoji|badge|button)/i.test(m[1])) continue;
-              seen[m[1]] = true;
-              out.push(m[1]);
-              if (out.length >= PAGES_MAX) break;
-            }
-            if (out.length >= 2) pages = out;
-          } catch (e2) { kino.log("tmoreader", rp + " " + e2.message); }
-        }
-      }
-      // si el detalle ya trae muchas imágenes de contenido
-      if (!pages.length) {
-        const out = [], seen = {};
-        const re = /(?:data-src|data-original|src)="(https?:\/\/[^"\s]*(?:storage\.|image\.|uploads)[^"\s]*\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
-        let m;
-        while ((m = re.exec(det)) !== null) {
-          if (seen[m[1]]) continue;
-          seen[m[1]] = true;
-          out.push(m[1]);
-          if (out.length >= PAGES_MAX) break;
-        }
-        if (out.length >= 2) pages = out;
-      }
-    } catch (e) { kino.log("tmohtml", cand + " " + e.message); }
-  }
-
-  if (!pages.length) throw kino.error("network", "sin-paginas", {
-    userMessage: "No se pudieron cargar las páginas de este cómic. Prueba otra fuente o más tarde.",
-  });
-  const meta = {
-    title: (metaHtml && metaHtml.title) || info.title || prog.title || fav.title || ("Cómic " + id),
-    poster: (metaHtml && metaHtml.poster) || info.poster || prog.poster || fav.poster || pages[0],
-    overview: (metaHtml && metaHtml.overview) || "",
-    adult: true,
-  };
-  return { slug: slug, meta: meta, pages: pages };
-}
 
 // Imágenes de un cómic (galería del contenido, en orden de lectura).
 // Genérica: cualquier galería de WordPress (/wp-content/uploads/).
@@ -526,8 +368,102 @@ function pageNodes(p, i, pre) {
 // (force=true la salta). Tope de PAGES_MAX páginas. Lo pesado se
 // guarda en kino.storage («serie:<slug>»); del estado de la pantalla
 // solo viaja el meta.
+
+// Tarjetas DoujinHentai: enlaces /manga/<slug>
+function dhCards(html, max, site) {
+  const out = [], seen = {};
+  const re = /(?:href|data-href)="((?:https?:\/\/[^"\/]+)?\/manga\/([a-z0-9][a-z0-9-]{2,}))"/g;
+  let m;
+  while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
+    const path = m[1], slug = m[2];
+    if (seen[slug] || slug === "page") continue;
+    seen[slug] = true;
+    const win = html.slice(m.index, Math.min(html.length, m.index + 2800));
+    const t = win.match(/line-clamp-2[^>]*>\s*([^<]{2,180})</)
+      || win.match(/class="[^"]*title[^"]*"[^>]*>\s*([^<]{2,180})</)
+      || win.match(/<h[23][^>]*>\s*([^<]{2,180})</);
+    const im = win.match(/<img[^>]+(?:data-src|data-original|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"]*)?)"/);
+    out.push({
+      slug: slug,
+      url: /^https?:/.test(path) ? path : (site.base + path),
+      title: t ? decode(t[1]) : slug.replace(/-/g, " "),
+      poster: im ? im[1] : "",
+      adult: true,
+    });
+  }
+  if (!out.length) {
+    const re2 = /\/manga\/([a-z0-9][a-z0-9-]{3,})/g;
+    while ((m = re2.exec(html)) !== null && out.length < (max || 40)) {
+      const slug = m[1];
+      if (seen[slug] || slug === "page") continue;
+      seen[slug] = true;
+      out.push({ slug: slug, url: site.base + "/manga/" + slug, title: slug.replace(/-/g, " "), poster: "", adult: true });
+    }
+  }
+  return out;
+}
+
+// DoujinHentai: detalle /manga/<slug> y páginas de imágenes
+async function loadSeriesDh(site, slug, force) {
+  if (!slug || !/^[a-z0-9][a-z0-9-]{2,}$/i.test(slug)) throw kino.error("arguments", "slug");
+  const info = CARDINFO[slug] || {};
+  const prog = progress()[slug] || {};
+  const fav = favs().find((f) => f.slug === slug) || {};
+  const paths = ["/manga/" + slug, "/manga/" + slug + "/read", "/manga/" + slug + "/leer", "/manga/" + slug + "/1"];
+  let pages = [];
+  let meta = {
+    title: info.title || prog.title || fav.title || slug.replace(/-/g, " "),
+    poster: info.poster || prog.poster || fav.poster || "",
+    overview: "",
+    adult: true,
+  };
+  for (const path of paths) {
+    try {
+      const html = await getHtml(site, path, 22000);
+      if (!html || html.length < 500) continue;
+      const pick = (re) => { const m = html.match(re); return m ? decode(m[1]) : ""; };
+      meta.title = pick(/property="og:title"[^>]*content="([^"]+)"/) || pick(/<h1[^>]*>\s*([^<]{2,200})</) || meta.title;
+      meta.poster = pick(/property="og:image"[^>]*content="([^"]+)"/) || meta.poster;
+      meta.overview = (pick(/property="og:description"[^>]*content="([^"]+)"/) || "").slice(0, 600);
+      const out = [], seen = {};
+      const re = /(?:data-src|data-original|data-lazy-src|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const u = m[1];
+        if (seen[u] || /(logo|icon|avatar|emoji|badge|button|flag|sprite)/i.test(u)) continue;
+        seen[u] = true;
+        out.push(u);
+        if (out.length >= PAGES_MAX) break;
+      }
+      if (out.length >= 2) { pages = out; break; }
+      const rd = html.match(/href="([^"]*(?:\/read|\/leer|\/reader|\/capitulo)[^"#]*)"/i);
+      if (rd && path.indexOf("/read") < 0) {
+        const rp = rd[1].indexOf("://") >= 0 ? rd[1].replace(site.base, "") : rd[1];
+        try {
+          const rhtml = await getHtml(site, rp, 25000);
+          const out2 = [], seen2 = {};
+          const re2 = /(?:data-src|data-original|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
+          let m2;
+          while ((m2 = re2.exec(rhtml)) !== null) {
+            if (seen2[m2[1]] || /(logo|icon|avatar)/i.test(m2[1])) continue;
+            seen2[m2[1]] = true;
+            out2.push(m2[1]);
+            if (out2.length >= PAGES_MAX) break;
+          }
+          if (out2.length >= 2) { pages = out2; break; }
+        } catch (e2) { kino.log("dhreader", e2.message); }
+      }
+    } catch (e) { kino.log("dhdetail", path + " " + e.message); }
+  }
+  if (!pages.length) throw kino.error("network", "sin-paginas", {
+    userMessage: "No se pudieron cargar las páginas. Prueba otra fuente o más tarde.",
+  });
+  if (!meta.poster) meta.poster = pages[0];
+  return { slug: slug, meta: meta, pages: pages };
+}
+
 async function loadSeries(site, slug, force) {
-  if (site.kind === "tmo") return loadSeriesTmo(site, slug, force);
+  if (site.kind === "dh") return loadSeriesDh(site, slug, force);
   if (!slugValido(slug)) throw kino.error("arguments", "slug");
   const ck = "serie:" + site.id + ":" + slug;
   if (!force) {
