@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.3.1 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.3.2 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -62,30 +62,6 @@ const SITES = [
       { key: "cpx1", tax: "categories", id: 1, label: "Comics Porno", labelEn: "Porn Comics" },
       { key: "cpx10", tax: "categories", id: 10, label: "Milftoon", labelEn: "Milftoon" },
       { key: "cpx6", tax: "categories", id: 6, label: "Incesto", labelEn: "Incest" },
-    ],
-  },
-  {
-    id: "c18", name: "Comics18", base: "https://comics18.org",
-    comicPath: "",
-    cardRe: 'href="(https:\\/\\/comics18\\.org\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
-    sections: [
-      { key: "c18136", tax: "categories", id: 136, label: "Manga Hentai", labelEn: "Hentai Manga" },
-      { key: "c181281", tax: "categories", id: 1281, label: "CrazyDad3D", labelEn: "CrazyDad3D" },
-      { key: "c1819", tax: "categories", id: 19, label: "Palcomix", labelEn: "Palcomix" },
-      { key: "c1838", tax: "categories", id: 38, label: "Y3DF", labelEn: "Y3DF" },
-      { key: "c182281", tax: "categories", id: 2281, label: "Pig King", labelEn: "Pig King" },
-    ],
-  },
-  {
-    id: "vcx", name: "VerComicsPorno.xxx", base: "https://vercomicsporno.xxx",
-    comicPath: "",
-    cardRe: 'href="(https:\\/\\/vercomicsporno\\.xxx\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
-    sections: [
-      { key: "vcx46", tax: "categories", id: 46, label: "Porno Anime", labelEn: "Anime XXX" },
-      { key: "vcx314", tax: "categories", id: 314, label: "Furry Hentai", labelEn: "Furry Hentai" },
-      { key: "vcx10", tax: "categories", id: 10, label: "Comics Porno", labelEn: "Porn Comics" },
-      { key: "vcx6", tax: "categories", id: 6, label: "Milftoon", labelEn: "Milftoon" },
-      { key: "vcx32", tax: "categories", id: 32, label: "Incesto", labelEn: "Incest" },
     ],
   },
   {
