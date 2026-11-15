@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.0.2 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.0.3 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -64,6 +64,16 @@ const SITES = [
       { key: "k229c", tax: "categories", id: 229, label: "Pokemon", labelEn: "Pokemon" },
       { key: "k169c", tax: "categories", id: 169, label: "Naruto", labelEn: "Naruto" },
       { key: "k244c", tax: "categories", id: 244, label: "My Hero Academia", labelEn: "My Hero Academia" },
+    ],
+  },
+  {
+    id: "hm", name: "HManga", base: "https://hmanga.asia",
+    comicPath: "",
+    cardRe: 'href="(https?:\\/\\/(?:www\\.)?hmanga\\.asia\\/([a-z0-9][a-z0-9-]{3,})\\/?)"',
+    sections: [
+      { key: "hm1", tax: "categories", id: 1, label: "Novedades", labelEn: "Latest" },
+      { key: "hmTag1", pathHtml: "/tags/sin-censura/", label: "Sin censura", labelEn: "Uncensored" },
+      { key: "hmTag2", pathHtml: "/tags/full-color/", label: "Full Color", labelEn: "Full Color" },
     ],
   },
   {
@@ -170,7 +180,7 @@ async function getCards(site, page, q, sec) {
   if (site.kind === "tmo") {
     const pt = parseInt(page, 10) || 1;
     const ruta = q ? "/biblioteca?title=" + encodeURIComponent(q) + (pt > 1 ? "&page=" + pt : "")
-      : sec ? sec.path + "&page=" + pt
+      : sec ? sec.path + (sec.path.indexOf("?") >= 0 ? "&" : "?") + "page=" + pt
       : "/biblioteca?page=" + pt;
     return tmoCards(await getHtml(site, ruta, 20000), 40, site);
   }
@@ -178,17 +188,29 @@ async function getCards(site, page, q, sec) {
   // 1) REST (con _embed: trae la portada destacada de cada cómic)
   try {
     let path;
-    if (sec) path = "/posts?" + sec.tax + "=" + sec.id + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
-    else if (q) path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
-    else path = "/posts?per_page=" + PER_PAGE + "&page=" + p + "&_embed";
-    const arr = await getApi(site, path, 12000);
-    if (Array.isArray(arr) && arr.length) return postsToCards(arr, site);
-    if (Array.isArray(arr) && !q) return []; // página pasada de la vuelta: fin real
+    if (sec && sec.tax && sec.id != null) {
+      path = "/posts?" + sec.tax + "=" + sec.id + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+    } else if (q) {
+      path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+    } else if (!sec) {
+      path = "/posts?per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+    } else {
+      path = null; // pathHtml section → solo HTML
+    }
+    if (path) {
+      const arr = await getApi(site, path, 12000);
+      if (Array.isArray(arr) && arr.length) return postsToCards(arr, site);
+      if (Array.isArray(arr) && !q) return []; // página pasada de la vuelta: fin real
+    }
   } catch (e) { kino.log("rest", e.message); }
-  // 2) HTML (respaldo)
+  // 2) HTML (respaldo o sección por pathHtml)
   let htmlPath;
   if (q) htmlPath = "/?s=" + encodeURIComponent(q);
-  else htmlPath = "/page/" + p + "/";
+  else if (sec && sec.pathHtml) {
+    htmlPath = sec.pathHtml + (p > 1 ? (sec.pathHtml.indexOf("?") >= 0 ? "&" : "?") + "page=" + p : "");
+    // también /page/N/ si el tag soporta paginación clásica
+    if (p > 1 && sec.pathHtml.indexOf("?") < 0) htmlPath = sec.pathHtml.replace(/\/?$/, "") + "/page/" + p + "/";
+  } else htmlPath = "/page/" + p + "/";
   const html = await getHtml(site, htmlPath, 20000);
   return htmlCards(html, 40, site);
 }
@@ -298,17 +320,25 @@ async function getJsonUrl(site, path, timeoutMs) {
 // «/library/<tipo>/<id>/<slug>» con su título y portada cercana.
 function tmoCards(html, max, site) {
   const out = [], seen = {};
-  const re = /href="((?:https?:\/\/[^"\/]+)?\/library\/[a-z0-9-]+\/(\d+)\/[a-z0-9-]+)"/g;
+  // /library/<tipo>/<id>/<slug>  o  /library/<id>/<slug>
+  const re = /href="((?:https?:\/\/[^"\/]+)?\/library\/(?:[a-z0-9-]+\/)?(\d+)\/[a-z0-9-]+[^"]*)"/g;
   let m;
   while ((m = re.exec(html)) !== null && out.length < (max || 40)) {
     const path = m[1], id = m[2];
     if (seen[id]) continue;
     seen[id] = true;
-    const win = html.slice(m.index, m.index + 3000);
-    const t = win.match(/manga-card__title[^>]*>\s*([^<]{1,200})</);
-    const im = win.match(/<img[^>]+src="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif))"/);
-    out.push({ slug: id, url: /^https?:/.test(path) ? path : site.base + path,
-      title: t ? decode(t[1]) : id, poster: im ? im[1] : "", adult: true });
+    const win = html.slice(m.index, Math.min(html.length, m.index + 3500));
+    const t = win.match(/manga-card__title[^>]*>\s*([^<]{1,200})</)
+      || win.match(/class="[^"]*title[^"]*"[^>]*>\s*([^<]{1,200})</)
+      || win.match(/<h[23][^>]*>\s*([^<]{1,200})</);
+    const im = win.match(/<img[^>]+(?:data-src|data-original|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"]*)?)"/);
+    out.push({
+      slug: id,
+      url: /^https?:/.test(path) ? path : (site.base + (path.startsWith("/") ? path : "/" + path)),
+      title: t ? decode(t[1]) : ("Cómic " + id),
+      poster: im ? im[1] : "",
+      adult: true,
+    });
   }
   return out;
 }
@@ -324,53 +354,124 @@ async function loadSeriesTmo(site, slug, force) {
   const info = CARDINFO[slug] || {};
   const prog = progress()[slug] || {};
   const fav = favs().find((f) => f.slug === slug) || {};
-  const urlComic = info.u || prog.url || fav.u || "";
-  let pages = [];
-  // 1) API JSON del lector (solo hace falta el id)
-  try {
-    const data = await getJsonUrl(site, "/api/manga/" + id + "/preview-pages", 20000);
-    const arr = (data && data.pages) || [];
-    pages = arr.map((x) => ({ n: x.page_number || 0, url: x.proxied_url || "" }))
-      .filter((x) => x.url)
-      .sort((a, b) => a.n - b.n)
-      .map((x) => x.url).slice(0, PAGES_MAX);
-  } catch (e) { kino.log("tmoapi", e.message); }
-  // 2) HTML del detalle (metadatos) y de la página del lector (imágenes)
-  let metaHtml = null;
+  let urlComic = info.u || prog.url || fav.u || "";
+  // Si no tenemos URL de detalle, construimos candidatos habituales
+  const detailCandidates = [];
   if (urlComic) {
+    detailCandidates.push(urlComic.indexOf("://") >= 0 ? urlComic.replace(site.base, "") : urlComic);
+  }
+  detailCandidates.push(
+    "/library/comic/" + id,
+    "/library/manga/" + id,
+    "/library/doujinshi/" + id,
+    "/library/hentai/" + id,
+    "/library/" + id
+  );
+  let pages = [];
+  let metaHtml = null;
+
+  // 1) API JSON del lector (varios endpoints posibles)
+  const apiPaths = [
+    "/api/manga/" + id + "/preview-pages",
+    "/api/v1/manga/" + id + "/pages",
+    "/api/manga/" + id + "/pages",
+  ];
+  for (const ap of apiPaths) {
+    if (pages.length) break;
     try {
-      const det = await getHtml(site, urlComic.indexOf("://") >= 0 ? urlComic.replace(site.base, "") : urlComic, 20000);
+      const data = await getJsonUrl(site, ap, 18000);
+      const arr = (data && (data.pages || data.data || data.images)) || [];
+      if (Array.isArray(arr) && arr.length) {
+        pages = arr.map((x, i) => {
+          if (typeof x === "string") return { n: i, url: x };
+          return {
+            n: x.page_number != null ? x.page_number : (x.page != null ? x.page : i),
+            url: x.proxied_url || x.url || x.src || x.image || "",
+          };
+        }).filter((x) => x.url)
+          .sort((a, b) => a.n - b.n)
+          .map((x) => x.url).slice(0, PAGES_MAX);
+      }
+    } catch (e) { kino.log("tmoapi", ap + " " + e.message); }
+  }
+
+  // 2) HTML del detalle + lector
+  for (const cand of detailCandidates) {
+    if (metaHtml && pages.length) break;
+    try {
+      const det = await getHtml(site, cand, 20000);
+      if (!det || det.length < 400) continue;
       const pick = (re) => { const m = det.match(re); return m ? decode(m[1]) : ""; };
-      metaHtml = {
-        title: pick(/id="md-title"[^>]*>\s*([^<]{1,200})</) || "",
-        poster: pick(/id="md-cover"[^>]+src="([^"]+)"/) || "",
-        overview: pick(/synopsis[\s\S]{0,400}?<p[^>]*>([^<]{1,600})</) || "",
-      };
+      if (!metaHtml) {
+        metaHtml = {
+          title: pick(/id="md-title"[^>]*>\s*([^<]{1,200})</)
+            || pick(/property="og:title"[^>]*content="([^"]+)"/)
+            || pick(/<h1[^>]*>\s*([^<]{1,200})</) || "",
+          poster: pick(/id="md-cover"[^>]+src="([^"]+)"/)
+            || pick(/property="og:image"[^>]*content="([^"]+)"/) || "",
+          overview: pick(/synopsis[\s\S]{0,400}?<p[^>]*>([^<]{1,600})</)
+            || pick(/property="og:description"[^>]*content="([^"]+)"/) || "",
+        };
+      }
       if (!pages.length) {
-        const rd = det.match(/href="([^"]*\/view_uploads\/[^"#]*)"/);
+        // enlace al lector
+        const rd = det.match(/href="([^"]*(?:\/view_uploads\/|\/reader\/|\/read\/)[^"#]*)"/i)
+          || det.match(/href="([^"]*\/library\/[^"]+\/read[^"#]*)"/i);
+        const readerPaths = [];
         if (rd) {
           const rp = rd[1].indexOf("://") >= 0 ? rd[1].replace(site.base, "") : rd[1];
-          const rhtml = await getHtml(site, rp, 25000);
-          const zona = rhtml.indexOf("reader-wrap") >= 0 ? rhtml.slice(rhtml.indexOf("reader-wrap")) : rhtml;
-          const out = [], seen = {};
-          const re = /(?:data-src|data-original|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
-          let m;
-          while ((m = re.exec(zona)) !== null) {
-            if (seen[m[1]]) continue;
-            seen[m[1]] = true;
-            out.push(m[1]);
-            if (out.length >= PAGES_MAX) break;
-          }
-          pages = out;
+          readerPaths.push(rp);
+        }
+        // candidatos directos por id
+        readerPaths.push(
+          "/view_uploads/" + id,
+          "/reader/" + id,
+          "/library/comic/" + id + "/read",
+          cand.replace(/\/?$/, "") + "/read"
+        );
+        for (const rp of readerPaths) {
+          if (pages.length) break;
+          try {
+            const rhtml = await getHtml(site, rp, 25000);
+            const zona = rhtml.indexOf("reader-wrap") >= 0
+              ? rhtml.slice(rhtml.indexOf("reader-wrap"))
+              : (rhtml.indexOf("reader") >= 0 ? rhtml.slice(rhtml.indexOf("reader")) : rhtml);
+            const out = [], seen = {};
+            const re = /(?:data-src|data-original|data-lazy-src|src)="(https?:\/\/[^"\s]+?\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
+            let m;
+            while ((m = re.exec(zona)) !== null) {
+              if (seen[m[1]]) continue;
+              // filtrar logos / iconos pequeños
+              if (/\/(logo|icon|avatar|emoji|badge|button)/i.test(m[1])) continue;
+              seen[m[1]] = true;
+              out.push(m[1]);
+              if (out.length >= PAGES_MAX) break;
+            }
+            if (out.length >= 2) pages = out;
+          } catch (e2) { kino.log("tmoreader", rp + " " + e2.message); }
         }
       }
-    } catch (e) { kino.log("tmohtml", e.message); }
+      // si el detalle ya trae muchas imágenes de contenido
+      if (!pages.length) {
+        const out = [], seen = {};
+        const re = /(?:data-src|data-original|src)="(https?:\/\/[^"\s]*(?:storage\.|image\.|uploads)[^"\s]*\.(?:webp|jpe?g|png|gif)(?:\?[^"\s]*)?)"/g;
+        let m;
+        while ((m = re.exec(det)) !== null) {
+          if (seen[m[1]]) continue;
+          seen[m[1]] = true;
+          out.push(m[1]);
+          if (out.length >= PAGES_MAX) break;
+        }
+        if (out.length >= 2) pages = out;
+      }
+    } catch (e) { kino.log("tmohtml", cand + " " + e.message); }
   }
+
   if (!pages.length) throw kino.error("network", "sin-paginas", {
-    userMessage: "No se pudieron cargar las páginas. Inténtalo de nuevo.",
+    userMessage: "No se pudieron cargar las páginas de este cómic. Prueba otra fuente o más tarde.",
   });
   const meta = {
-    title: metaHtml && metaHtml.title ? metaHtml.title : (info.title || prog.title || fav.title || "Cómic " + id),
+    title: (metaHtml && metaHtml.title) || info.title || prog.title || fav.title || ("Cómic " + id),
     poster: (metaHtml && metaHtml.poster) || info.poster || prog.poster || fav.poster || pages[0],
     overview: (metaHtml && metaHtml.overview) || "",
     adult: true,
