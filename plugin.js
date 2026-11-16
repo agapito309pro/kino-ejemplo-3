@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.3.2 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.4.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -52,6 +52,19 @@ const MEDIA_PER = 100; // adjuntos por petición (tope REST de WordPress)
 // Las fuentes. «tax» de cada sección: taxonomy REST de WordPress.
 // «cardRe»: expresión para el respaldo HTML (grupo 1 = URL, 2 = slug).
 const SITES = [
+  {
+    id: "t3d", name: "Tangas3D", base: "https://tangas3d.com",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/tangas3d\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    sections: [
+      { key: "t532", tax: "categories", id: 532, label: "CrazyDad3D", labelEn: "CrazyDad3D" },
+      { key: "t397", tax: "categories", id: 397, label: "Y3DF", labelEn: "Y3DF" },
+      { key: "t570", tax: "categories", id: 570, label: "Pig King", labelEn: "Pig King" },
+      { key: "t437", tax: "categories", id: 437, label: "Comics 3D", labelEn: "3D Comics" },
+      { key: "t391", tax: "categories", id: 391, label: "Blackadder", labelEn: "Blackadder" },
+      { key: "t457", tax: "categories", id: 457, label: "Moiarte", labelEn: "Moiarte" },
+    ],
+  },
   {
     id: "cpx", name: "ComicsPorno", base: "https://comicsporno.xxx",
     comicPath: "",
@@ -335,29 +348,54 @@ async function getJsonUrl(site, path, timeoutMs) {
 
 // Imágenes de un cómic (galería del contenido, en orden de lectura).
 // Genérica: cualquier galería de WordPress (/wp-content/uploads/).
+function normalizeImgUrl(u) {
+  if (!u) return "";
+  try {
+    // decodifica y vuelve a codificar para caracteres raros (– en nombres)
+    u = String(u).trim().replace(/&amp;/g, "&");
+    // encodeURI mantiene : / ? = y codifica espacios y unicode del path
+    return encodeURI(decodeURI(u));
+  } catch (e) {
+    try { return encodeURI(u); } catch (e2) { return u; }
+  }
+}
+
 function readerImages(content) {
   const html = String(content || "");
   const out = [], seen = {};
-  // Cualquier imagen http(s): wp-content, CDN (fullcomics18, himg.nl, etc.)
-  const re = /(?:src|data-src|data-lazy-src|data-full|data-original)="?(https?:\/\/[^"\s>]+\.(?:webp|jpe?g|png|gif)(?:\?[^"\s>]*)?)"?/gi;
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    const u = m[1];
-    if (seen[u]) continue;
-    // filtrar logos, banners, avatares, emojis, thumbs minúsculos de UI
-    if (/(?:^|[^a-z])(?:logo|icon|avatar|emoji|badge|button|flag|sprite|smiley|banner|favicon|placeholder|spinner)(?:[^a-z]|$)|\/(?:ads?|banners?)\b|wp-includes|gravatar|loading\.gif/i.test(u)) continue;
-    // thumbs de listado muy pequeños típicos de sidebar
-    if (/-\d{2,3}x\d{2,3}\.(?:webp|jpe?g|png)/i.test(u) && !/uploads/i.test(u)) continue;
+  const push = (raw) => {
+    if (!raw) return;
+    let u = raw.trim();
+    if (u.indexOf("//") === 0) u = "https:" + u;
+    if (!/^https?:\/\//i.test(u)) return;
+    if (!/\.(webp|jpe?g|png|gif)(\?|$)/i.test(u)) return;
+    u = normalizeImgUrl(u);
+    if (!u || seen[u]) return;
+    if (/(?:^|[^a-z])(?:logo|icon|avatar|emoji|badge|button|flag|sprite|smiley|banner|favicon|placeholder|spinner)(?:[^a-z]|$)|\/(?:ads?|banners?)\b|wp-includes|gravatar|loading\.gif/i.test(u)) return;
+    if (/-\d{2,3}x\d{2,3}\.(?:webp|jpe?g|png)/i.test(u) && !/uploads/i.test(u)) return;
     seen[u] = true;
-    const win = html.slice(Math.max(0, m.index - 300), m.index + m[0].length + 300);
-    const w = parseInt((win.match(/\bwidth="(\d+)"/) || [])[1], 10) || 0;
-    const h = parseInt((win.match(/\bheight="(\d+)"/) || [])[1], 10) || 0;
-    // descartar imágenes minúsculas de UI si traen width/height
-    if (w > 0 && h > 0 && w < 120 && h < 120) continue;
-    out.push({ url: u, w: w, h: h });
+    out.push({ url: u, w: 0, h: 0 });
+  };
+  // src / data-src / data-lazy-src / data-full / data-original
+  const re = /(?:src|data-src|data-lazy-src|data-full|data-original|data-url)="?(https?:\/\/[^"\s>]+|\/\/[^"\s>]+)"?/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) push(m[1]);
+  // srcset: tomar la URL más grande
+  const reSet = /srcset="([^"]+)"/gi;
+  while ((m = reSet.exec(html)) !== null) {
+    const parts = m[1].split(",");
+    let best = "", bestW = 0;
+    for (const part of parts) {
+      const bits = part.trim().split(/\s+/);
+      if (!bits[0]) continue;
+      const w = parseInt((bits[1] || "0").replace(/[^\d]/g, ""), 10) || 0;
+      if (!best || w >= bestW) { best = bits[0]; bestW = w; }
+    }
+    if (best) push(best);
   }
   return out;
 }
+
 
 // Metadatos desde el HTML de la entrada (respaldo): og:* + galería.
 function seriesMetaHtml(html, slug) {
@@ -429,12 +467,21 @@ async function loadSeries(site, slug, force) {
       if (!meta.poster && pages.length) meta.poster = pages[0];
     }
   } catch (e) { kino.log("rest", e.message); }
-  // 2) HTML de la entrada (respaldo)
-  if (!pages.length) {
-    const html = await getHtml(site, "/" + site.comicPath + slug + "/", 30000);
-    meta = seriesMetaHtml(html, slug);
-    pages = readerImages(html).map((x) => x.url);
-    if (!meta.poster && pages.length) meta.poster = pages[0];
+  // 2) HTML de la entrada (respaldo si REST no trajo páginas suficientes)
+  if (pages.length < 3) {
+    try {
+      const path = "/" + (site.comicPath || "") + slug + "/";
+      const html = await getHtml(site, path.replace(/\/+/g, "/"), 30000);
+      const htmlPages = readerImages(html).map((x) => x.url);
+      if (htmlPages.length > pages.length) {
+        pages = htmlPages;
+        const hm = seriesMetaHtml(html, slug);
+        if (hm.title) meta.title = hm.title;
+        if (hm.poster) meta.poster = hm.poster;
+        if (hm.overview) meta.overview = hm.overview;
+      }
+      if (!meta.poster && pages.length) meta.poster = pages[0];
+    } catch (eHtml) { kino.log("htmlfb", eHtml.message); }
   }
   if (!pages.length) throw kino.error("not_found", "comic", {
     userMessage: "No se encontraron páginas para ese cómic.",
