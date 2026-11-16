@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.4.1 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.4.2 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -201,34 +201,54 @@ async function getHtml(site, path, timeoutMs) {
 // una lista o lanza «network» (para que la pantalla muestre el error).
 async function getCards(site, page, q, sec) {
   const p = parseInt(page, 10) || 1;
+  const per = q ? Math.max(PER_PAGE, 30) : PER_PAGE;
   // 1) REST (con _embed: trae la portada destacada de cada cómic)
   try {
-    let path;
+    let paths = [];
     if (sec && sec.tax && sec.id != null) {
-      path = "/posts?" + sec.tax + "=" + sec.id + "&per_page=" + PER_PAGE + "&page=" + p + "&_embed";
+      paths = ["/posts?" + sec.tax + "=" + sec.id + "&per_page=" + per + "&page=" + p + "&_embed"];
     } else if (q) {
-      path = "/posts?search=" + encodeURIComponent(q) + "&per_page=" + Math.max(PER_PAGE, 24) + "&page=" + p + "&_embed&orderby=relevance";
+      const qq = encodeURIComponent(q);
+      // Varias estrategias: relevance, search simple, y búsqueda ampliada
+      paths = [
+        "/posts?search=" + qq + "&per_page=" + per + "&page=" + p + "&_embed&orderby=relevance",
+        "/posts?search=" + qq + "&per_page=" + per + "&page=" + p + "&_embed",
+        "/posts?search=" + qq + "&per_page=" + per + "&page=" + p + "&_embed&orderby=date",
+      ];
     } else if (!sec) {
-      path = "/posts?per_page=" + PER_PAGE + "&page=" + p + "&_embed";
-    } else {
-      path = null; // pathHtml section → solo HTML
+      paths = ["/posts?per_page=" + per + "&page=" + p + "&_embed"];
     }
-    if (path) {
-      const arr = await getApi(site, path, 12000);
-      if (Array.isArray(arr) && arr.length) return postsToCards(arr, site);
-      if (Array.isArray(arr) && !q) return []; // página pasada de la vuelta: fin real
+    for (const path of paths) {
+      try {
+        const arr = await getApi(site, path, 14000);
+        if (Array.isArray(arr) && arr.length) return postsToCards(arr, site);
+        if (Array.isArray(arr) && !q) return []; // fin real de listado
+      } catch (e1) { kino.log("rest", e1.message); }
     }
   } catch (e) { kino.log("rest", e.message); }
   // 2) HTML (respaldo o sección por pathHtml)
-  let htmlPath;
-  if (q) htmlPath = "/?s=" + encodeURIComponent(q);
-  else if (sec && sec.pathHtml) {
-    htmlPath = sec.pathHtml + (p > 1 ? (sec.pathHtml.indexOf("?") >= 0 ? "&" : "?") + "page=" + p : "");
-    // también /page/N/ si el tag soporta paginación clásica
-    if (p > 1 && sec.pathHtml.indexOf("?") < 0) htmlPath = sec.pathHtml.replace(/\/?$/, "") + "/page/" + p + "/";
-  } else htmlPath = "/page/" + p + "/";
-  const html = await getHtml(site, htmlPath, 20000);
-  return htmlCards(html, 40, site);
+  let htmlPaths = [];
+  if (q) {
+    const qq = encodeURIComponent(q);
+    htmlPaths = ["/?s=" + qq, "/search/" + qq + "/", "/?s=" + qq + "&post_type=post"];
+  } else if (sec && sec.pathHtml) {
+    let hp = sec.pathHtml;
+    if (p > 1) {
+      if (hp.indexOf("?") >= 0) hp = hp + "&page=" + p;
+      else hp = hp.replace(/\/?$/, "") + "/page/" + p + "/";
+    }
+    htmlPaths = [hp];
+  } else {
+    htmlPaths = ["/page/" + p + "/"];
+  }
+  for (const htmlPath of htmlPaths) {
+    try {
+      const html = await getHtml(site, htmlPath, 20000);
+      const cards = htmlCards(html, 40, site);
+      if (cards.length) return cards;
+    } catch (e2) { kino.log("html", e2.message); }
+  }
+  return [];
 }
 
 // ------------------------------------------------------------- scraping
@@ -887,6 +907,11 @@ function tabBody(state) {
           subtitle: "Por título, p. ej. Chloe", subtitleEn: "By title, e.g. Chloe",
           trailing: { type: "Icon", name: "arrow_forward" },
           onTap: { event: "goSearch" } },
+        { type: "ListTile", key: "settingsTile", leading: { type: "Icon", name: "tune" },
+          title: "Fuente predeterminada", titleEn: "Default source",
+          subtitle: "Cuál cargar al abrir el plugin", subtitleEn: "Which source loads on open",
+          trailing: { type: "Icon", name: "chevron_right" },
+          onTap: { event: "goSettings" } },
         chipsRow(state),
       ].concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
         .concat(rail("Mis favoritos", "My favourites", "favs", favs()))
@@ -1214,30 +1239,33 @@ function settingsTree(state) {
     type: "Scaffold",
     appBar: {
       title: "Ajustes", titleEn: "Settings",
-      leading: { type: "IconButton", key: "backHome", icon: "arrow_back",
+      leading: { type: "IconButton", key: "backFromSettings", icon: "arrow_back",
         onPressed: { event: "pop" } },
       actions: [],
     },
     body: {
-      type: "SingleChildScrollView", key: "settingsBody",
-      children: [{
-        type: "Column", padding: 16, gap: 12, children: [
-          { type: "Text", text: "Fuente al iniciar", textEn: "Startup source", style: "h3" },
-          { type: "Text", text: "Se usará al abrir Lectura +18. También puedes cambiar de fuente en Inicio.",
-            textEn: "Used when opening Lectura +18. You can still switch sources on Home.", color: "muted" },
-          {
-            type: "Chips", key: "prefFuente",
-            options: SITES.map((s) => ({ value: s.id, label: s.name, labelEn: s.name })),
-            value: cur,
-            onChanged: { event: "prefFuenteSel" },
-          },
-          { type: "Text", text: "Fuente activa ahora: " + siteOfId(activa).name,
-            textEn: "Current source: " + siteOfId(activa).name, color: "muted", padding: 8 },
-          { type: "ElevatedButton", icon: "check", labelText: "Usar la activa como predeterminada",
-            labelTextEn: "Use current as default",
-            onPressed: { event: "prefFuenteActual" } },
-        ],
-      }],
+      type: "ListView", key: "settingsBody", padding: 8, children: [
+        { type: "ListTile", key: "prefHead",
+          title: "Fuente al iniciar", titleEn: "Startup source",
+          subtitle: "Se carga al abrir Lectura +18", subtitleEn: "Loaded when opening Lectura +18" },
+        {
+          type: "Chips", key: "prefFuente", padding: 12,
+          options: SITES.map((s) => ({ value: s.id, label: s.name, labelEn: s.name })),
+          value: cur,
+          onChanged: { event: "prefFuenteSel" },
+        },
+        { type: "ListTile", key: "prefCur",
+          title: "Ahora activo: " + siteOfId(activa).name,
+          titleEn: "Now active: " + siteOfId(activa).name,
+          subtitle: "Toca para guardar como predeterminada",
+          subtitleEn: "Tap to save as default",
+          trailing: { type: "Icon", name: "check_circle" },
+          onTap: { event: "prefFuenteActual" } },
+        { type: "ElevatedButton", key: "prefSave", icon: "save",
+          labelText: "Guardar «" + siteOfId(activa).name + "» como predeterminada",
+          labelTextEn: "Save «" + siteOfId(activa).name + "» as default",
+          onPressed: { event: "prefFuenteActual" } },
+      ],
     },
   };
 }
@@ -1299,7 +1327,7 @@ export async function screen({ state, route }) {
     appBar: {
       title: siteDe(state).name,
       actions: [
-        { type: "IconButton", icon: "settings", key: "goSettings", labelText: "Ajustes", labelTextEn: "Settings", onPressed: { event: "goSettings" } },
+        { type: "IconButton", icon: "tune", key: "goSettings", labelText: "Ajustes", labelTextEn: "Settings", onPressed: { event: "goSettings" } },
         { type: "IconButton", icon: "search", key: "goSearch", labelText: "Buscar", labelTextEn: "Search", onPressed: { event: "goSearch" } },
       ],
       bottom: {
