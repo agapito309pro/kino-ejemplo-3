@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.4.0 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.4.1 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -52,31 +52,6 @@ const MEDIA_PER = 100; // adjuntos por petición (tope REST de WordPress)
 // Las fuentes. «tax» de cada sección: taxonomy REST de WordPress.
 // «cardRe»: expresión para el respaldo HTML (grupo 1 = URL, 2 = slug).
 const SITES = [
-  {
-    id: "t3d", name: "Tangas3D", base: "https://tangas3d.com",
-    comicPath: "",
-    cardRe: 'href="(https:\\/\\/tangas3d\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
-    sections: [
-      { key: "t532", tax: "categories", id: 532, label: "CrazyDad3D", labelEn: "CrazyDad3D" },
-      { key: "t397", tax: "categories", id: 397, label: "Y3DF", labelEn: "Y3DF" },
-      { key: "t570", tax: "categories", id: 570, label: "Pig King", labelEn: "Pig King" },
-      { key: "t437", tax: "categories", id: 437, label: "Comics 3D", labelEn: "3D Comics" },
-      { key: "t391", tax: "categories", id: 391, label: "Blackadder", labelEn: "Blackadder" },
-      { key: "t457", tax: "categories", id: 457, label: "Moiarte", labelEn: "Moiarte" },
-    ],
-  },
-  {
-    id: "cpx", name: "ComicsPorno", base: "https://comicsporno.xxx",
-    comicPath: "",
-    cardRe: 'href="(https:\\/\\/comicsporno\\.xxx\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
-    sections: [
-      { key: "cpx85", tax: "categories", id: 85, label: "Komik Hentai", labelEn: "Hentai" },
-      { key: "cpx821", tax: "categories", id: 821, label: "Porno Anime", labelEn: "Anime XXX" },
-      { key: "cpx1", tax: "categories", id: 1, label: "Comics Porno", labelEn: "Porn Comics" },
-      { key: "cpx10", tax: "categories", id: 10, label: "Milftoon", labelEn: "Milftoon" },
-      { key: "cpx6", tax: "categories", id: 6, label: "Incesto", labelEn: "Incest" },
-    ],
-  },
   {
     id: "rey", name: "ReyComix", base: "https://reycomix.com",
     comicPath: "",
@@ -116,10 +91,29 @@ const SITES = [
       { key: "cpa55", tax: "categories", id: 55, label: "Interracial", labelEn: "Interracial" },
     ],
   },
+  {
+    id: "t3d", name: "Tangas3D", base: "https://tangas3d.com",
+    comicPath: "",
+    cardRe: 'href="(https:\\/\\/tangas3d\\.com\\/([a-z0-9][a-z0-9-]{4,})\\/?)"',
+    sections: [
+      { key: "t532", tax: "categories", id: 532, label: "CrazyDad3D", labelEn: "CrazyDad3D" },
+      { key: "t397", tax: "categories", id: 397, label: "Y3DF", labelEn: "Y3DF" },
+      { key: "t570", tax: "categories", id: 570, label: "Pig King", labelEn: "Pig King" },
+      { key: "t437", tax: "categories", id: 437, label: "Comics 3D", labelEn: "3D Comics" },
+      { key: "t391", tax: "categories", id: 391, label: "Blackadder", labelEn: "Blackadder" },
+      { key: "t457", tax: "categories", id: 457, label: "Moiarte", labelEn: "Moiarte" },
+    ],
+  },
 ];
 
+function prefFuenteId() {
+  const id = getJson("prefFuente", null);
+  if (id && SITES.some((s) => s.id === id)) return id;
+  return SITES[0].id;
+}
+
 function siteDe(state) {
-  const id = state && state.fuente;
+  const id = (state && state.fuente) || prefFuenteId();
   return SITES.find((s) => s.id === id) || SITES[0];
 }
 
@@ -1211,6 +1205,43 @@ async function readerTree(state) {
   };
 }
 
+
+// Ajustes: fuente por defecto al abrir la pantalla
+function settingsTree(state) {
+  const cur = prefFuenteId();
+  const activa = siteDe(state).id;
+  return {
+    type: "Scaffold",
+    appBar: {
+      title: "Ajustes", titleEn: "Settings",
+      leading: { type: "IconButton", key: "backHome", icon: "arrow_back",
+        onPressed: { event: "pop" } },
+      actions: [],
+    },
+    body: {
+      type: "SingleChildScrollView", key: "settingsBody",
+      children: [{
+        type: "Column", padding: 16, gap: 12, children: [
+          { type: "Text", text: "Fuente al iniciar", textEn: "Startup source", style: "h3" },
+          { type: "Text", text: "Se usará al abrir Lectura +18. También puedes cambiar de fuente en Inicio.",
+            textEn: "Used when opening Lectura +18. You can still switch sources on Home.", color: "muted" },
+          {
+            type: "Chips", key: "prefFuente",
+            options: SITES.map((s) => ({ value: s.id, label: s.name, labelEn: s.name })),
+            value: cur,
+            onChanged: { event: "prefFuenteSel" },
+          },
+          { type: "Text", text: "Fuente activa ahora: " + siteOfId(activa).name,
+            textEn: "Current source: " + siteOfId(activa).name, color: "muted", padding: 8 },
+          { type: "ElevatedButton", icon: "check", labelText: "Usar la activa como predeterminada",
+            labelTextEn: "Use current as default",
+            onPressed: { event: "prefFuenteActual" } },
+        ],
+      }],
+    },
+  };
+}
+
 async function searchTree(state) {
   const q = typeof state.resultsQ === "string" ? state.resultsQ : "";
   const results = Array.isArray(state.results) ? state.results : null;
@@ -1256,6 +1287,7 @@ export async function screen({ state, route }) {
     }
     if (r.name === "read") return await readerTree(state);
     if (r.name === "search") return searchTree(state);
+    if (r.name === "settings") return settingsTree(state);
   } catch (e) {
     return errorTree("No se pudo cargar (" + (e.code || "error") + ").", "retry");
   }
@@ -1267,6 +1299,7 @@ export async function screen({ state, route }) {
     appBar: {
       title: siteDe(state).name,
       actions: [
+        { type: "IconButton", icon: "settings", key: "goSettings", labelText: "Ajustes", labelTextEn: "Settings", onPressed: { event: "goSettings" } },
         { type: "IconButton", icon: "search", key: "goSearch", labelText: "Buscar", labelTextEn: "Search", onPressed: { event: "goSearch" } },
       ],
       bottom: {
@@ -1308,10 +1341,12 @@ export async function screenEvent(ev) {
       if (r.name === "detail") {
         const slug = routeSlug(r);
         if (slug && slugValido(slug) && (!state.detail || state.detail.slug !== slug)) {
-          // no se bloquea; el detalle se pinta ya con esqueletos y el
-          // temporizador «cargarSerie» trae las páginas.
           return { state: { detail: detailLoadingDe(slug, state) } };
         }
+      }
+      // aplicar fuente predeterminada si aún no hay una en el estado
+      if (!state.fuente) {
+        return { state: { fuente: prefFuenteId() } };
       }
       return null;
     }
@@ -1426,6 +1461,22 @@ export async function screenEvent(ev) {
       return { state: { libItems: merged, libPage: page, libDone: more.length < PER_PAGE || merged.length >= LIB_MAX } };
     }
     if (name === "goSearch") return { route: { push: "search" } };
+    if (name === "goSettings") return { route: { push: "settings" } };
+    if (name === "prefFuenteSel") {
+      const raw = ev.value;
+      const id = String(typeof raw === "string" ? raw : (raw && (raw.prefFuente || raw.value)) || ev.arg || "");
+      if (!SITES.some((s) => s.id === id)) return null;
+      setJson("prefFuente", id);
+      // también cambia la fuente activa y recarga listados
+      return { state: { fuente: id, cats: {}, libItems: null, libPage: 1, libError: false, libDone: false, libLoading: false },
+        toast: "Predeterminada: " + siteOfId(id).name };
+    }
+    if (name === "prefFuenteActual") {
+      const id = siteDe(state).id;
+      setJson("prefFuente", id);
+      return { toast: "Predeterminada: " + siteOfId(id).name };
+    }
+    if (name === "pop") return { route: { pop: true } };
     if (name === "popBack") return { route: { pop: true } };
     if (name === "search") {
       const q = String(ev.value && ev.value.q || "").trim();
