@@ -31,7 +31,7 @@
 // Requiere Kino 0.9.74 o superior (apiVersion 14, capabilities
 // "screen" y "shared").
 //
-// v2.4.2 — multi-fuente: TMOHentai con las rutas actuales del sitio
+// v2.4.3 — multi-fuente: TMOHentai con las rutas actuales del sitio
 //   (/biblioteca, lector /view_uploads), VerMangasPorno fuera (bloquea
 //   las imágenes fuera de su web), selector de fuentes con chips.
 //   - Dos fuentes conmutables con chips (VerMangasPorno en español y
@@ -163,11 +163,34 @@ function headersDe(site) {
   };
 }
 
+// Warmup suave: una visita a la home por fuente (cada ~10 min) para
+// establecer cookies de sesión / CF ligero antes de la API o el HTML.
+// No resuelve challenges duros; evita el primer 403 intermitente.
+const WARM_TTL_MS = 600000;
+const warmAt = {};
+
+async function warmSite(site) {
+  if (!site || !site.base) return;
+  const id = site.id || site.base;
+  const now = Date.now();
+  if (warmAt[id] && now - warmAt[id] < WARM_TTL_MS) return;
+  try {
+    await kino.fetch(site.base + "/", {
+      headers: headersDe(site),
+      timeoutMs: 8000,
+    });
+  } catch (e) {
+    kino.log("warm", (site.id || "") + " " + (e && e.message ? e.message : e));
+  }
+  warmAt[id] = Date.now();
+}
+
 // ---------------------------------------------------------------- red
 
 // Petición JSON a la API REST. Lanza un error «network» si el sitio no
 // responde o devuelve algo que no es JSON.
 async function getApi(site, path, timeoutMs) {
+  await warmSite(site);
   const r = await kino.fetch(site.base + "/wp-json/wp/v2" + path, {
     headers: headersDe(site),
     timeoutMs: timeoutMs || 15000,
@@ -186,6 +209,7 @@ async function getApi(site, path, timeoutMs) {
 
 // Petición HTML a una página del sitio (respaldo).
 async function getHtml(site, path, timeoutMs) {
+  await warmSite(site);
   const r = await kino.fetch(site.base + path, {
     headers: headersDe(site),
     timeoutMs: timeoutMs || 20000,
@@ -907,11 +931,6 @@ function tabBody(state) {
           subtitle: "Por título, p. ej. Chloe", subtitleEn: "By title, e.g. Chloe",
           trailing: { type: "Icon", name: "arrow_forward" },
           onTap: { event: "goSearch" } },
-        { type: "ListTile", key: "settingsTile", leading: { type: "Icon", name: "tune" },
-          title: "Fuente predeterminada", titleEn: "Default source",
-          subtitle: "Cuál cargar al abrir el plugin", subtitleEn: "Which source loads on open",
-          trailing: { type: "Icon", name: "chevron_right" },
-          onTap: { event: "goSettings" } },
         chipsRow(state),
       ].concat(rail("Seguir leyendo", "Continue reading", "leyendo", leyendo))
         .concat(rail("Mis favoritos", "My favourites", "favs", favs()))
@@ -1231,45 +1250,6 @@ async function readerTree(state) {
 }
 
 
-// Ajustes: fuente por defecto al abrir la pantalla
-function settingsTree(state) {
-  const cur = prefFuenteId();
-  const activa = siteDe(state).id;
-  return {
-    type: "Scaffold",
-    appBar: {
-      title: "Ajustes", titleEn: "Settings",
-      leading: { type: "IconButton", key: "backFromSettings", icon: "arrow_back",
-        onPressed: { event: "pop" } },
-      actions: [],
-    },
-    body: {
-      type: "ListView", key: "settingsBody", padding: 8, children: [
-        { type: "ListTile", key: "prefHead",
-          title: "Fuente al iniciar", titleEn: "Startup source",
-          subtitle: "Se carga al abrir Lectura +18", subtitleEn: "Loaded when opening Lectura +18" },
-        {
-          type: "Chips", key: "prefFuente", padding: 12,
-          options: SITES.map((s) => ({ value: s.id, label: s.name, labelEn: s.name })),
-          value: cur,
-          onChanged: { event: "prefFuenteSel" },
-        },
-        { type: "ListTile", key: "prefCur",
-          title: "Ahora activo: " + siteOfId(activa).name,
-          titleEn: "Now active: " + siteOfId(activa).name,
-          subtitle: "Toca para guardar como predeterminada",
-          subtitleEn: "Tap to save as default",
-          trailing: { type: "Icon", name: "check_circle" },
-          onTap: { event: "prefFuenteActual" } },
-        { type: "ElevatedButton", key: "prefSave", icon: "save",
-          labelText: "Guardar «" + siteOfId(activa).name + "» como predeterminada",
-          labelTextEn: "Save «" + siteOfId(activa).name + "» as default",
-          onPressed: { event: "prefFuenteActual" } },
-      ],
-    },
-  };
-}
-
 async function searchTree(state) {
   const q = typeof state.resultsQ === "string" ? state.resultsQ : "";
   const results = Array.isArray(state.results) ? state.results : null;
@@ -1315,7 +1295,6 @@ export async function screen({ state, route }) {
     }
     if (r.name === "read") return await readerTree(state);
     if (r.name === "search") return searchTree(state);
-    if (r.name === "settings") return settingsTree(state);
   } catch (e) {
     return errorTree("No se pudo cargar (" + (e.code || "error") + ").", "retry");
   }
@@ -1327,7 +1306,6 @@ export async function screen({ state, route }) {
     appBar: {
       title: siteDe(state).name,
       actions: [
-        { type: "IconButton", icon: "tune", key: "goSettings", labelText: "Ajustes", labelTextEn: "Settings", onPressed: { event: "goSettings" } },
         { type: "IconButton", icon: "search", key: "goSearch", labelText: "Buscar", labelTextEn: "Search", onPressed: { event: "goSearch" } },
       ],
       bottom: {
@@ -1489,21 +1467,6 @@ export async function screenEvent(ev) {
       return { state: { libItems: merged, libPage: page, libDone: more.length < PER_PAGE || merged.length >= LIB_MAX } };
     }
     if (name === "goSearch") return { route: { push: "search" } };
-    if (name === "goSettings") return { route: { push: "settings" } };
-    if (name === "prefFuenteSel") {
-      const raw = ev.value;
-      const id = String(typeof raw === "string" ? raw : (raw && (raw.prefFuente || raw.value)) || ev.arg || "");
-      if (!SITES.some((s) => s.id === id)) return null;
-      setJson("prefFuente", id);
-      // también cambia la fuente activa y recarga listados
-      return { state: { fuente: id, cats: {}, libItems: null, libPage: 1, libError: false, libDone: false, libLoading: false },
-        toast: "Predeterminada: " + siteOfId(id).name };
-    }
-    if (name === "prefFuenteActual") {
-      const id = siteDe(state).id;
-      setJson("prefFuente", id);
-      return { toast: "Predeterminada: " + siteOfId(id).name };
-    }
     if (name === "pop") return { route: { pop: true } };
     if (name === "popBack") return { route: { pop: true } };
     if (name === "search") {
